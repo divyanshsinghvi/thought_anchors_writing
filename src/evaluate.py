@@ -4,14 +4,15 @@ from tigerscore import TIGERScorer
 import json
 from typing import List
 
-def evaluate(samples:dict, device: str = "cuda"): 
+def evaluate(samples:List[dict], device: str = "cuda"): 
     """
     Evaluate the samples based on the models and metrics.
     
     """
-    reward_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATHS.bt_reward).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS.bt_reward)
-    scorer = TIGERScorer(model_name=MODEL_PATHS.tiger_score).to(device)
+    # reward_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATHS.bt_reward).to(device)
+    # tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS.bt_reward)
+    print("Initialized scorer")
+    scorer = TIGERScorer(model_name=MODEL_PATHS.tiger_score)
     
     for sample in samples:
         is_fictional = sample["is_fictional"]
@@ -44,3 +45,64 @@ def non_fictional_evaluation(instruction: List[str], input_context: List[str], c
     """
     results = scorer.score(instruction, content, input_context)
     return results
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Evaluate samples from a JSON file.")
+    parser.add_argument(
+        "--input",
+        type=str,
+        default="/pscratch/sd/r/ritesh11/temp/test.json",
+        help="Path to input JSON file containing a list of samples",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to write evaluated samples as JSON",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default='cuda',
+        choices=["cuda", "cpu"],
+        help="Device to run models on. Defaults to auto-detect.",
+    )
+
+    args = parser.parse_args()
+
+    # Auto-detect device if not provided
+    selected_device = args.device
+    if selected_device is None:
+        try:
+            import torch  # type: ignore
+
+            selected_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            selected_device = "cpu"
+
+    try:
+        with open(args.input, "r") as f:
+            samples = json.load(f)
+    except Exception as e:
+        print(f"Failed to read input JSON from {args.input}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        evaluated = evaluate(samples, device=selected_device)
+    except Exception as e:
+        print(f"Evaluation failed: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.output:
+        try:
+            with open(args.output, "w") as f:
+                json.dump(evaluated, f, indent=2)
+        except Exception as e:
+            print(f"Failed to write output JSON to {args.output}: {e}", file=sys.stderr)
+            sys.exit(3)
+    else:
+        print(json.dumps(evaluated, indent=2))
