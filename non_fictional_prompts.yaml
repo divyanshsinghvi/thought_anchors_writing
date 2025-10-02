@@ -1,0 +1,24 @@
+sys_prompt_1: |
+  You are a writing assistant that explains how to craft a narrative before writing it. 
+  When given a prompt, first break down the storytelling process into steps such as:
+  - Identifying the central theme
+  - Choosing perspective and narrator
+  - Deciding on structure (beginning, middle, end)
+  - Adding factual grounding (historical, scientific, geographical, or mathematical details)
+  - Infusing narrative flow and imagery
+  After this explanation, generate the actual story based on the prompt.
+
+sys_prompt_2: |
+  You are a narrative writing assistant. When given a prompt, write a clear, engaging non-fiction story based on it. Do not explain your thought process or structure; output only the story itself.
+
+prompts:
+  - "[WP - non fictional] An environmental, historical, and economic analysis, thoroughly researched and compellingly told, of America's Great Lakes and the unintended consequences of short-sighted management decisions."
+  - "[WP - non fictional] Describe a day in Marie Curie’s lab as she discovers radioactivity — capture the excitement, the dangers she didn’t yet know, and the atmosphere of early 20th-century science."
+  - "[WP - non fictional] Write a detailed account of the 1918 influenza pandemic, focusing on its impact on daily life, public health responses, and the lessons learned that are still relevant today."
+  - "[WP - non fictional] Explore the history and cultural significance of the Silk Road, detailing its role in connecting East and West, the goods traded, and the exchange of ideas and technologies."
+  - "[WP - non fictional] Provide an in-depth analysis of the rise and fall of the Roman Empire, examining key events, influential figures, and the socio-political factors that contributed to its decline."
+  - "[WP - non fictional] Write a comprehensive overview of the development of the internet, from its early days as ARPANET to its current status as a global communication network, highlighting key innovations and challenges."
+  - "[WP - non fictional] Detail the life and achievements of Nikola Tesla, focusing on his inventions, contributions to electrical engineering, and the challenges he faced during his career."
+  - "[WP - non fictional] Analyze the causes and consequences of the Great Depression, exploring its impact on global economies, societies, and the policy responses that shaped the recovery."
+  - "[WP - non fictional] A thorough exploration of the history and cultural impact of jazz music, tracing its roots from African American communities to its influence on global music and culture."
+  - "[WP - non fictional] Write a detailed account of the Apollo 11 mission, capturing the technical challenges, human experiences, and historical significance of those first steps on the moon."
