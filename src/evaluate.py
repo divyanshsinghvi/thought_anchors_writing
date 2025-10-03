@@ -14,11 +14,11 @@ def evaluate(samples:List[dict], device: str = "cuda", batch_size: int = 8):
     """
     with open(FICTIONAL_PROMPTS_YAML, "r") as f:
         data = yaml.safe_load(f)
+        
+    sample_ids = [s["sample_id"] - 1  for s in samples]
 
-    sample_ids = [s["sample_id"]-1  for s in samples]
-    
     prompts =  [data["prompts"][sid] for sid in sample_ids]
-    print(prompts)
+
     contents = [s['response']['responses'][0]['content'] for s in samples]
     scores = []
 
@@ -118,18 +118,15 @@ if __name__ == "__main__":
         print(f"Failed to read input JSON from {args.input}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        # Monkeypatch to handle single sample at this moment
-        if type(samples) == dict:
-            samples = [samples]
+    # Monkeypatch to handle single sample at this moment
+    if type(samples) == dict:
+        samples = [samples]
 
-        if args.batch_size > len(samples):
-            args.batch_size = len(samples)
-        
-        evaluated = evaluate(samples, device=selected_device, batch_size=args.batch_size)
-    except Exception as e:
-        print(f"Evaluation failed: {e}", file=sys.stderr)
-        sys.exit(2)
+    if args.batch_size > len(samples):
+        args.batch_size = len(samples)
+    
+    evaluated = evaluate(samples, device=selected_device, batch_size=args.batch_size)
+
 
     if args.output:
         try:
