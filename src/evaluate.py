@@ -18,7 +18,8 @@ def evaluate(samples:List[dict], device: str = "cuda", batch_size: int = 8):
     sample_ids = [s["sample_id"]-1  for s in samples]
     
     prompts =  [data["prompts"][sid] for sid in sample_ids]
-    contents = [s['responses'][0]['content'] for s in samples]
+    print(prompts)
+    contents = [s['response']['responses'][0]['content'] for s in samples]
     scores = []
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
