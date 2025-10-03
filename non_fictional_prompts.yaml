@@ -1,0 +1,335 @@
+system_prompts:
+  structured_cot: |
+    You are a narrative writing assistant specializing in non-fiction. Think through 
+    your storytelling approach step-by-step BEFORE writing.
+    
+    <thinking>
+    ## Theme & Purpose
+    [What core truth or insight will this piece explore?]
+    
+    ## Narrative Approach
+    [What perspective and voice will you use? Why?]
+    
+    ## Structure Plan
+    [How will you organize: opening hook, development, conclusion?]
+    
+    ## Factual Grounding
+    [What historical/scientific/geographic details will you include? How will you verify accuracy?]
+    
+    ## Key Scenes & Imagery
+    [What specific moments or descriptions will bring the story alive?]
+    
+    ## Revision Notes
+    [Any concerns or alternative approaches to consider?]
+    </thinking>
+    
+    Use this exact format:
+    <story>
+    [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
+    </story>
+
+  freeform_cot: |
+    You are a narrative writing assistant specializing in non-fiction. Before writing 
+    your story, think through your approach freely. Explore ideas, consider alternatives,
+    and reason about your choices.
+    
+    
+    <thinking>
+    [Think through your approach here - explore ideas, make decisions, revise as needed.
+    Don't follow a rigid structure, just think naturally about how to craft this story.]
+    </thinking>
+
+    Use this exact format:
+    <story>
+    [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
+    </story>
+
+  minimal_cot: |
+    You are a narrative writing assistant. Briefly note your main idea, then write 
+    the non-fiction story.
+    
+    <thinking>
+    [In 2-3 sentences: What's your core approach to this story?]
+    </thinking>
+    
+    Use this exact format:
+    <story>
+    [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
+    </story>
+
+  nohint_cot: |
+    You are a narrative writing assistant. Briefly note your main idea, then write 
+    the non-fiction story.
+    
+    Use this exact format:
+    <story>
+    [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
+    </story>
+
+  no_cot: |
+    You are a narrative writing assistant. Just write the non-fiction story. Don't think at all.
+    
+    Use this exact format:
+    <story>
+    [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
+    </story>
+
+prompts:
+  - id: "nf_001"
+    category: "environmental_analysis"
+    subcategory: "multi-disciplinary"
+    text: "[WP - non fictional] An environmental, historical, and economic analysis, thoroughly researched and compellingly told, of America's Great Lakes and the unintended consequences of short-sighted management decisions."
+    expected_reasoning_focus: 
+      - "factual_research"
+      - "multi-perspective_analysis"
+      - "causal_chains"
+      - "systems_thinking"
+      - "evidence_synthesis"
+    expected_story_elements:
+      - "environmental_data"
+      - "historical_timeline"
+      - "economic_impacts"
+      - "policy_decisions"
+      - "consequences"
+    difficulty: "high"
+    expected_length: "1200-1500 words"
+    factual_density: "very_high"
+    narrative_style: "analytical"
+    
+  - id: "nf_002"
+    category: "historical_narrative"
+    subcategory: "scientific_biography"
+    text: "[WP - non fictional] Describe a day in Marie Curie's lab as she discovers radioactivity — capture the excitement, the dangers she didn't yet know, and the atmosphere of early 20th-century science."
+    expected_reasoning_focus:
+      - "scene_setting"
+      - "historical_accuracy"
+      - "narrative_pacing"
+      - "sensory_details"
+      - "dramatic_irony"
+      - "character_voice"
+    expected_story_elements:
+      - "lab_environment"
+      - "scientific_process"
+      - "emotional_journey"
+      - "historical_context"
+      - "foreshadowing_danger"
+    difficulty: "medium"
+    expected_length: "800-1000 words"
+    factual_density: "medium"
+    narrative_style: "immersive_scene"
+    
+  - id: "nf_003"
+    category: "historical_analysis"
+    subcategory: "public_health"
+    text: "[WP - non fictional] Write a detailed account of the 1918 influenza pandemic, focusing on its impact on daily life, public health responses, and the lessons learned that are still relevant today."
+    expected_reasoning_focus:
+      - "factual_research"
+      - "impact_analysis"
+      - "comparative_thinking"
+      - "lessons_extraction"
+      - "temporal_structure"
+    expected_story_elements:
+      - "pandemic_statistics"
+      - "daily_life_changes"
+      - "public_health_measures"
+      - "societal_impact"
+      - "modern_parallels"
+    difficulty: "high"
+    expected_length: "1000-1200 words"
+    factual_density: "high"
+    narrative_style: "analytical_narrative"
+    
+  - id: "nf_004"
+    category: "cultural_history"
+    subcategory: "trade_networks"
+    text: "[WP - non fictional] Explore the history and cultural significance of the Silk Road, detailing its role in connecting East and West, the goods traded, and the exchange of ideas and technologies."
+    expected_reasoning_focus:
+      - "historical_scope"
+      - "cultural_connections"
+      - "geographic_visualization"
+      - "thematic_organization"
+      - "cause_and_effect"
+    expected_story_elements:
+      - "geographic_route"
+      - "traded_goods"
+      - "cultural_exchanges"
+      - "technological_transfers"
+      - "historical_significance"
+    difficulty: "medium-high"
+    expected_length: "1000-1200 words"
+    factual_density: "high"
+    narrative_style: "exploratory"
+    
+  - id: "nf_005"
+    category: "historical_analysis"
+    subcategory: "civilization_study"
+    text: "[WP - non fictional] Provide an in-depth analysis of the rise and fall of the Roman Empire, examining key events, influential figures, and the socio-political factors that contributed to its decline."
+    expected_reasoning_focus:
+      - "temporal_structure"
+      - "causal_analysis"
+      - "multi-factor_synthesis"
+      - "character_selection"
+      - "thematic_coherence"
+    expected_story_elements:
+      - "key_events_timeline"
+      - "influential_figures"
+      - "political_factors"
+      - "social_factors"
+      - "decline_mechanisms"
+    difficulty: "very_high"
+    expected_length: "1200-1500 words"
+    factual_density: "very_high"
+    narrative_style: "comprehensive_analysis"
+    
+  - id: "nf_006"
+    category: "technology_history"
+    subcategory: "communication_networks"
+    text: "[WP - non fictional] Write a comprehensive overview of the development of the internet, from its early days as ARPANET to its current status as a global communication network, highlighting key innovations and challenges."
+    expected_reasoning_focus:
+      - "chronological_organization"
+      - "technical_explanation"
+      - "innovation_highlighting"
+      - "challenge_identification"
+      - "evolution_tracking"
+    expected_story_elements:
+      - "arpanet_origins"
+      - "key_innovations"
+      - "milestone_events"
+      - "technical_challenges"
+      - "societal_impact"
+    difficulty: "high"
+    expected_length: "1000-1200 words"
+    factual_density: "high"
+    narrative_style: "technical_narrative"
+    
+  - id: "nf_007"
+    category: "scientific_biography"
+    subcategory: "inventor_profile"
+    text: "[WP - non fictional] Detail the life and achievements of Nikola Tesla, focusing on his inventions, contributions to electrical engineering, and the challenges he faced during his career."
+    expected_reasoning_focus:
+      - "biographical_arc"
+      - "achievement_selection"
+      - "technical_explanation"
+      - "conflict_integration"
+      - "legacy_framing"
+    expected_story_elements:
+      - "life_trajectory"
+      - "major_inventions"
+      - "electrical_engineering_contributions"
+      - "career_challenges"
+      - "historical_impact"
+    difficulty: "medium"
+    expected_length: "900-1100 words"
+    factual_density: "medium-high"
+    narrative_style: "biographical_narrative"
+    
+  - id: "nf_008"
+    category: "economic_history"
+    subcategory: "crisis_analysis"
+    text: "[WP - non fictional] Analyze the causes and consequences of the Great Depression, exploring its impact on global economies, societies, and the policy responses that shaped the recovery."
+    expected_reasoning_focus:
+      - "causal_analysis"
+      - "multi-level_impact"
+      - "policy_evaluation"
+      - "geographic_scope"
+      - "recovery_narrative"
+    expected_story_elements:
+      - "depression_causes"
+      - "economic_impacts"
+      - "social_consequences"
+      - "policy_responses"
+      - "recovery_process"
+    difficulty: "high"
+    expected_length: "1100-1300 words"
+    factual_density: "very_high"
+    narrative_style: "analytical"
+    
+  - id: "nf_009"
+    category: "cultural_history"
+    subcategory: "music_evolution"
+    text: "[WP - non fictional] A thorough exploration of the history and cultural impact of jazz music, tracing its roots from African American communities to its influence on global music and culture."
+    expected_reasoning_focus:
+      - "cultural_roots"
+      - "evolution_tracking"
+      - "influence_mapping"
+      - "social_context"
+      - "global_diffusion"
+    expected_story_elements:
+      - "african_american_origins"
+      - "musical_evolution"
+      - "key_figures"
+      - "cultural_impact"
+      - "global_influence"
+    difficulty: "medium-high"
+    expected_length: "1000-1200 words"
+    factual_density: "medium-high"
+    narrative_style: "cultural_narrative"
+    
+  - id: "nf_010"
+    category: "space_history"
+    subcategory: "mission_narrative"
+    text: "[WP - non fictional] Write a detailed account of the Apollo 11 mission, capturing the technical challenges, human experiences, and historical significance of those first steps on the moon."
+    expected_reasoning_focus:
+      - "technical_accuracy"
+      - "human_drama"
+      - "chronological_narrative"
+      - "significance_framing"
+      - "tension_building"
+    expected_story_elements:
+      - "mission_timeline"
+      - "technical_challenges"
+      - "astronaut_experiences"
+      - "moon_landing_moment"
+      - "historical_significance"
+    difficulty: "medium"
+    expected_length: "900-1100 words"
+    factual_density: "high"
+    narrative_style: "dramatic_narrative"
+
+# Summary statistics for the dataset
+dataset_metadata:
+  total_prompts: 10
+  categories:
+    historical_narrative: 1
+    historical_analysis: 2
+    environmental_analysis: 1
+    cultural_history: 2
+    technology_history: 1
+    scientific_biography: 1
+    economic_history: 1
+    space_history: 1
+  
+  difficulty_distribution:
+    medium: 3
+    medium-high: 2
+    high: 4
+    very_high: 1
+  
+  narrative_style_distribution:
+    analytical: 2
+    analytical_narrative: 1
+    immersive_scene: 1
+    exploratory: 1
+    comprehensive_analysis: 1
+    technical_narrative: 1
+    biographical_narrative: 1
+    cultural_narrative: 1
+    dramatic_narrative: 1
+  
+  factual_density_distribution:
+    medium: 1
+    medium-high: 3
+    high: 4
+    very_high: 2
+  
+  expected_total_words: "10000-12500"
+  
+  reasoning_diversity:
+    - "factual_research and verification"
+    - "narrative structure and pacing"
+    - "causal analysis and chains"
+    - "multi-perspective synthesis"
+    - "technical explanation"
+    - "cultural context integration"
+    - "temporal organization"
+    - "dramatic tension and scene-setting"
