@@ -17,7 +17,8 @@ OUTPUT_DIR_FICTION = OUTPUT_DIR_BASE_PATH / "fiction"
 CACHE_PATH = OUTPUT_DIR_BASE_PATH / "cache"
 
 # Model configuration
-MODEL_NAME = "qwen/qwen3-14b:free"
+# MODEL_NAME = "qwen/qwen3-14b:free"
+MODEL_NAME = "qwen/qwen3-14b"
 
 # Evaluation configuration
 DEFAULT_EVALUATOR_MODELS = [

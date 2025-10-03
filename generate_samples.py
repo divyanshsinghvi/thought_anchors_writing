@@ -75,18 +75,9 @@ def get_system_prompt_configs(data, output_base_dir: Path):
     """Extract system prompts and create output directories dynamically."""
     sys_prompt_configs = []
 
-    # Handle both old and new YAML formats
-    if 'sys_prompt_1' in data:
-        # Old format compatibility
-        sys_prompt_configs = [
-            (data['sys_prompt_1'], output_base_dir / "structured_cot", "structured_cot"),
-            (data['sys_prompt_2'], output_base_dir / "freeform_cot", "freeform_cot")
-        ]
-    else:
-        # New format with explicit names - automatically handle all system prompts
-        for sys_prompt_name, sys_prompt_text in data['system_prompts'].items():
-            output_dir = output_base_dir / sys_prompt_name
-            sys_prompt_configs.append((sys_prompt_text, output_dir, sys_prompt_name))
+    for sys_prompt_name, sys_prompt_text in data['system_prompts'].items():
+        output_dir = output_base_dir / sys_prompt_name
+        sys_prompt_configs.append((sys_prompt_text, output_dir, sys_prompt_name))
 
     # Create all output directories
     for _, output_dir, _ in sys_prompt_configs:
