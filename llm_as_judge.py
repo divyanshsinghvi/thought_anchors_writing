@@ -38,12 +38,8 @@ def get_system_prompt_names(prompt_type: str) -> List[str]:
         data = yaml.safe_load(f)
 
     # Handle both old and new formats
-    if 'sys_prompt_1' in data:
-        # Old format compatibility
-        return ['structured_cot', 'freeform_cot']
-    else:
-        # New format - extract all system prompt names
-        return list(data.get('system_prompts', {}).keys())
+    # New format - extract all system prompt names
+    return list(data.get('system_prompts', {}).keys())
 
 
 # Evaluation dimensions for non-fiction
