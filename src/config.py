@@ -6,5 +6,5 @@ from pathlib import Path
 MODEL_PATH = Path("/pscratch/sd/r/ritesh11/temp/models/litbench_reward")
 
 
-BASE_DIR = Path("../")
+BASE_DIR = Path("./")
 FICTIONAL_PROMPTS_YAML = BASE_DIR / "prompts/fictional_prompts.yaml"

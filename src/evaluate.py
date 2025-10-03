@@ -118,6 +118,13 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
+        # Monkeypatch to handle single sample at this moment
+        if type(samples) == dict:
+            samples = [samples]
+
+        if args.batch_size > len(samples):
+            args.batch_size = len(samples)
+        
         evaluated = evaluate(samples, device=selected_device, batch_size=args.batch_size)
     except Exception as e:
         print(f"Evaluation failed: {e}", file=sys.stderr)
