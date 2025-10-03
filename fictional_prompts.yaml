@@ -1,0 +1,269 @@
+system_prompts:
+  descriptive_prompt: |
+    You are an imaginative fiction writer who specializes in responding to creative writing prompts (like those found on r/WritingPrompts).
+
+
+    Your task: Given a writing prompt, craft a **short story or excerpt** that:
+
+    * Is engaging, coherent, creative, original, and vividly written.
+    * Stays true to the premise of the prompt while adding depth, tension, or an unexpected twist.
+    * Uses natural, compelling prose with strong imagery, dialogue, and characterization where appropriate.
+    * Aims for a tone that feels like a published short story or a gripping excerpt from a novel.
+    * Is approximately 600-900 words in length.
+
+
+    Additional guidelines:
+
+    * Write in English, but adapt tone, genre, and perspective according to the prompt (e.g., fantasy, sci-fi, horror, comedy, slice-of-life).
+    * Plan it out thoroughly before writing
+    * Do not include meta-comments about writing; just output the story itself.
+
+  minimalistic_prompt: |
+    You are an imaginative fiction writer who specializes in responding to creative writing prompts (like those found on r/WritingPrompts).
+
+
+    Your task: Given a writing prompt, craft a **short story or excerpt** of approximately 600-900 words.
+
+    Guidelines:
+
+    * Write in English, but adapt tone, genre, and perspective according to the prompt (e.g., fantasy, sci-fi, horror, comedy, slice-of-life).
+    * Plan it out thoroughly before writing
+    * Do not include meta-comments about writing; just output the story itself.
+
+prompts:
+  - id: "fic_001"
+    category: "horror"
+    subcategory: "psychological_dread"
+    text: "[WP] It's 3 AM. An official phone alert wakes you up. It says \"DO NOT LOOK AT THE MOON\". You have hundreds of notifications. Hundreds of random numbers are sending \"It's a beautiful night tonight. Look outside.\""
+    expected_reasoning_focus:
+      - "tension_building"
+      - "sensory_details"
+      - "psychological_horror"
+      - "pacing"
+      - "ambiguity"
+    expected_story_elements:
+      - "phone_notifications"
+      - "conflicting_messages"
+      - "protagonist_reaction"
+      - "atmosphere_building"
+      - "resolution_or_cliffhanger"
+    difficulty: "medium"
+    expected_length: "600-900 words"
+    narrative_style: "suspenseful"
+
+  - id: "fic_002"
+    category: "experimental"
+    subcategory: "constrained_writing"
+    text: "[CW] Write a short story where the first sentence has 20 words, 2nd sentence has 19, 3rd has 18 etc. Story ends with a single word."
+    expected_reasoning_focus:
+      - "word_count_constraint"
+      - "narrative_compression"
+      - "meaning_preservation"
+      - "climactic_single_word"
+      - "sentence_flow"
+    expected_story_elements:
+      - "decreasing_word_count"
+      - "coherent_narrative"
+      - "emotional_arc"
+      - "impactful_ending"
+    difficulty: "high"
+    expected_length: "400-600 words"
+    narrative_style: "constrained"
+
+  - id: "fic_003"
+    category: "fantasy"
+    subcategory: "mythological"
+    text: "[WP] Death has hourglasses for every human. One day, during a cleaning, he found a dust covered one that had rolled under his desk."
+    expected_reasoning_focus:
+      - "character_voice"
+      - "world_building"
+      - "mystery_setup"
+      - "emotional_impact"
+      - "twist_or_revelation"
+    expected_story_elements:
+      - "death_as_character"
+      - "hourglass_discovery"
+      - "mystery_investigation"
+      - "revelation_moment"
+    difficulty: "medium"
+    expected_length: "700-1000 words"
+    narrative_style: "contemplative"
+
+  - id: "fic_004"
+    category: "sci-fi"
+    subcategory: "dystopian"
+    text: "[WP] Every human has a 'luck rating' - a number from 1-100 that defines how lucky they can be. Born with a rating of 100, you're confined in a maximum security prison. You think your luck should get you out easily - that is, until you see that all the other inmates also have luck ratings of 100."
+    expected_reasoning_focus:
+      - "world_building"
+      - "logical_extrapolation"
+      - "character_realization"
+      - "conflict_setup"
+      - "irony"
+    expected_story_elements:
+      - "luck_rating_system"
+      - "prison_setting"
+      - "protagonist_assumptions"
+      - "revelation_twist"
+      - "conflict_escalation"
+    difficulty: "medium-high"
+    expected_length: "800-1100 words"
+    narrative_style: "speculative"
+
+  - id: "fic_005"
+    category: "sci-fi"
+    subcategory: "generational_drama"
+    text: "[WP] When you're 28, science discovers a drug that stops all effects of aging, creating immortality. Your government decides to give the drug to all citizens under 26, but you and the rest of the \"Lost Generations\" are deemed too high-risk. When you're 85, the side effects are finally discovered."
+    expected_reasoning_focus:
+      - "temporal_structure"
+      - "societal_implications"
+      - "emotional_depth"
+      - "dramatic_irony"
+      - "theme_exploration"
+    expected_story_elements:
+      - "immortality_drug"
+      - "generational_divide"
+      - "time_skip"
+      - "side_effects_revelation"
+      - "protagonist_perspective"
+    difficulty: "high"
+    expected_length: "900-1200 words"
+    narrative_style: "reflective"
+
+  - id: "fic_006"
+    category: "horror"
+    subcategory: "uncanny"
+    text: "[WP] Your spouse has the annoying habit of unexpectedly licking you. When you ask them why they do it, they always reply \"just so you know it's really me.\" You think it's nothing but a cute joke. One day, feeling something is off, you realise your spouse hasn't done it in over three weeks."
+    expected_reasoning_focus:
+      - "slow_burn_tension"
+      - "mundane_to_horrific"
+      - "character_observation"
+      - "suspense_building"
+      - "implication_vs_explanation"
+    expected_story_elements:
+      - "unusual_habit"
+      - "relationship_dynamic"
+      - "gradual_realization"
+      - "mounting_dread"
+      - "ambiguous_threat"
+    difficulty: "medium"
+    expected_length: "600-900 words"
+    narrative_style: "unsettling"
+
+  - id: "fic_007"
+    category: "comedy"
+    subcategory: "absurdist"
+    text: "[WP] Eminem has to tell the history of the earth to a group of aliens in 5 minutes or less."
+    expected_reasoning_focus:
+      - "comedic_voice"
+      - "rhythm_and_flow"
+      - "information_compression"
+      - "character_voice"
+      - "absurdist_premise"
+    expected_story_elements:
+      - "eminem_character"
+      - "alien_audience"
+      - "rapid_fire_history"
+      - "rap_style_delivery"
+      - "humor"
+    difficulty: "medium-high"
+    expected_length: "500-800 words"
+    narrative_style: "comedic"
+
+  - id: "fic_008"
+    category: "sci-fi"
+    subcategory: "unique_magic_system"
+    text: "[WP] Everyone with the same name shares knowledge. If one Bob gets a degree in electrical engineering, then all Bob's have this knowledge readily available. Soon, everyone starts naming their kids similar names until factions form. Your parents rebelled and named you something original."
+    expected_reasoning_focus:
+      - "world_building"
+      - "social_implications"
+      - "conflict_setup"
+      - "protagonist_uniqueness"
+      - "thematic_exploration"
+    expected_story_elements:
+      - "knowledge_sharing_system"
+      - "name_factions"
+      - "unique_protagonist"
+      - "societal_structure"
+      - "conflict_or_advantage"
+    difficulty: "high"
+    expected_length: "800-1100 words"
+    narrative_style: "speculative"
+
+  - id: "fic_009"
+    category: "sci-fi"
+    subcategory: "alien_perspective"
+    text: "[WP] \"So they are a war species then, huh.\" The alien scratched his head: \"Why are you interested in them. The humans, i mean.\" The other alien got closer. \"They fight for peace. No war species ever fights for peace.\""
+    expected_reasoning_focus:
+      - "perspective_shift"
+      - "dialogue_driven"
+      - "thematic_paradox"
+      - "character_development"
+      - "philosophical_exploration"
+    expected_story_elements:
+      - "alien_dialogue"
+      - "human_observation"
+      - "paradox_exploration"
+      - "philosophical_discussion"
+      - "perspective_revelation"
+    difficulty: "medium"
+    expected_length: "600-900 words"
+    narrative_style: "philosophical"
+
+  - id: "fic_010"
+    category: "dark_comedy"
+    subcategory: "supernatural"
+    text: "[WP] You die and appear before the Devil and seven other individuals. They applaud you and the Devil exclaims, \"finally, an eighth deadly sin!\""
+    expected_reasoning_focus:
+      - "comedic_setup"
+      - "revelation_structure"
+      - "character_voice"
+      - "absurd_premise"
+      - "creative_sin_invention"
+    expected_story_elements:
+      - "afterlife_setting"
+      - "devil_character"
+      - "seven_deadly_sins"
+      - "protagonist_sin_reveal"
+      - "comedic_payoff"
+    difficulty: "medium"
+    expected_length: "600-900 words"
+    narrative_style: "darkly_comedic"
+
+# Summary statistics for the dataset
+dataset_metadata:
+  total_prompts: 10
+  categories:
+    horror: 2
+    experimental: 1
+    fantasy: 1
+    sci-fi: 4
+    comedy: 1
+    dark_comedy: 1
+
+  difficulty_distribution:
+    medium: 5
+    medium-high: 2
+    high: 3
+
+  narrative_style_distribution:
+    suspenseful: 1
+    constrained: 1
+    contemplative: 1
+    speculative: 2
+    reflective: 1
+    unsettling: 1
+    comedic: 1
+    philosophical: 1
+    darkly_comedic: 1
+
+  expected_total_words: "6200-9500"
+
+  reasoning_diversity:
+    - "tension and suspense building"
+    - "constrained writing techniques"
+    - "world-building and logic"
+    - "character voice and development"
+    - "comedic timing and absurdism"
+    - "philosophical exploration"
+    - "dramatic irony and revelation"
+    - "perspective shifts"

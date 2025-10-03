@@ -67,8 +67,9 @@ system_prompts:
     </story>
 
   no_cot: |
-    You are a narrative writing assistant. Just write the non-fiction story. Don't think at all.
-    
+    You are a narrative writing assistant. Just write the non-fiction story. DO NOT THINK. JUST WRITE THE STORY.
+
+    <think></think>
     Use this exact format:
     <story>
     [Write your complete non-fiction narrative here. Use natural prose with minimal formatting.]
