@@ -1,6 +1,5 @@
 from config import MODEL_PATHS
-from transformers import AutoModelForSequenceClassification, AutoTokenizer 
-from tigerscore import TIGERScorer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, BitsAndBytesConfig
 import json
 from typing import List
 
@@ -9,17 +8,23 @@ def evaluate(samples:List[dict], device: str = "cuda"):
     Evaluate the samples based on the models and metrics.
     
     """
-    # reward_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATHS.bt_reward).to(device)
-    # tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS.bt_reward)
-    print("Initialized scorer")
-    scorer = TIGERScorer(model_name=MODEL_PATHS.tiger_score)
+    reward_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATHS.bt_reward).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATHS.bt_reward)
+
+    bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",   # can also use "fp4"
+    bnb_4bit_compute_dtype="float16"
+    )
+
+    reward_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATHS.bt_reward, 
+    quantization_config=bnb_config, device_map="auto")
     
     for sample in samples:
-        is_fictional = sample["is_fictional"]
-        if is_fictional:
-            score = fictional_evaluation(sample["WP"], sample["content"], reward_model, tokenizer, device)
-        else:
-            score = non_fictional_evaluation([sample["instruction"]], [sample["input_context"]], [sample["content"]], scorer, device)
+        
+        score = fictional_evaluation(sample["WP"], sample["content"], reward_model, tokenizer, device)
+       
         sample["score"] = score
     
     return samples
@@ -37,14 +42,14 @@ def fictional_evaluation(WP: str, content: str,
     return reward_model(**tokenized_text).logits[0][0].item()
 
 
-def non_fictional_evaluation(instruction: List[str], input_context: List[str], content: List[str],
-                             scorer: TIGERScorer, device: str = "cuda") -> float:
-    """
-    Score the content for a non-fictional story based on TIGERScore.
+# def non_fictional_evaluation(instruction: List[str], input_context: List[str], content: List[str],
+#                              scorer: TIGERScorer, device: str = "cuda") -> float:
+#     """
+#     Score the content for a non-fictional story based on TIGERScore.
     
-    """
-    results = scorer.score(instruction, content, input_context)
-    return results
+#     """
+#     results = scorer.score(instruction, content, input_context)
+#     return results
 
 
 if __name__ == "__main__":
