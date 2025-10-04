@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 # Default paths (adjust as needed)
-bt_reward="danielfein/bt-rewmodel-meta-llama_Llama-3.1-8B-final-20250512_094156",
+BT_REWARD ="danielfein/bt-rewmodel-meta-llama_Llama-3.1-8B-final-20250512_094156"
 MODEL_PATH = Path("/pscratch/sd/r/ritesh11/temp/models/litbench_reward")
 
 
