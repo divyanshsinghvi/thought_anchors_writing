@@ -219,7 +219,8 @@ if __name__ == "__main__":
         # Find all directories containing rollout files
         rollout_dirs: List[Path] = []
         for root, dirs, files in os.walk(input_path):
-            rollout_files = [f for f in files if f.startswith("rollout_") and f.endswith(".json")]
+            rollout_files = [f for f in files
+                           if (f.startswith("rollout_") or f.startswith("fic_")) and f.endswith(".json")]
             if rollout_files:
                 rollout_dirs.append(Path(root))
 
@@ -236,7 +237,7 @@ if __name__ == "__main__":
         for rollout_dir in tqdm(sorted(rollout_dirs), desc="Processing directories"):
             try:
                 filenames = [fn for fn in os.listdir(rollout_dir)
-                           if fn.startswith("rollout_") and fn.endswith(".json")]
+                           if (fn.startswith("rollout_") or fn.startswith("fic_")) and fn.endswith(".json")]
             except Exception as e:
                 print(f"Failed to list directory {rollout_dir}: {e}", file=sys.stderr)
                 continue
