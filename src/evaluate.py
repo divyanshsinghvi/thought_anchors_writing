@@ -122,6 +122,11 @@ if __name__ == "__main__":
         default=8,
         help="Batch size for batched scoring."
     )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Test mode: only process first 2 files from each directory"
+    )
 
     args = parser.parse_args()
 
@@ -246,7 +251,10 @@ if __name__ == "__main__":
             file_metadata_to_eval: List[Dict] = []
             new_results: Dict[str, Dict] = {}
 
-            for fn in sorted(filenames):
+            # Test mode: limit to first 2 files
+            files_to_process = sorted(filenames)[:2] if args.test else sorted(filenames)
+
+            for fn in files_to_process:
                 fpath = rollout_dir / fn
                 rollout_key = os.path.splitext(fn)[0]
 
@@ -314,7 +322,7 @@ if __name__ == "__main__":
                 continue
 
         print(f"\n{'='*80}")
-        print(f"Evaluation complete!")
+        print(f"Evaluation complete{' (TEST MODE - 2 files per directory)' if args.test else ''}!")
         print(f"Total evaluated: {total_evaluated}")
         print(f"Total skipped (unchanged): {total_skipped}")
         print(f"Processed {len(created_outputs)} directories")
