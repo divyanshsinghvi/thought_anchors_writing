@@ -107,6 +107,47 @@ def ablate_random_sample(paragraphs: List[str], para_index: int, seed: int = 42)
     return reconstruct_reasoning(ablated_paragraphs)
 
 
+def ablate_random_sample_50(paragraphs: List[str], para_index: int, seed: int = 42) -> str:
+    """Strategy 4: Keep random 50% of paragraphs.
+
+    Uses para_index as seed variation to get different random samples.
+    For reproducibility, uses seed + para_index as the random seed.
+    """
+    if para_index < 0 or para_index >= len(paragraphs):
+        raise ValueError(f"Invalid paragraph index {para_index} for {len(paragraphs)} paragraphs")
+
+    # Keep 50% of paragraphs (at least 1)
+    num_to_keep = max(1, len(paragraphs) // 2)
+
+    # Set seed for reproducibility
+    random.seed(seed + para_index)
+
+    # Sample random indices and keep them sorted to maintain order
+    indices = sorted(random.sample(range(len(paragraphs)), num_to_keep))
+    ablated_paragraphs = [paragraphs[i] for i in indices]
+
+    return reconstruct_reasoning(ablated_paragraphs)
+
+
+def ablate_shuffle(paragraphs: List[str], para_index: int, seed: int = 42) -> str:
+    """Strategy 5: Shuffle all paragraphs in random order.
+
+    Uses para_index as seed variation to get different shuffle orders.
+    For reproducibility, uses seed + para_index as the random seed.
+    """
+    if para_index < 0 or para_index >= len(paragraphs):
+        raise ValueError(f"Invalid paragraph index {para_index} for {len(paragraphs)} paragraphs")
+
+    # Set seed for reproducibility
+    random.seed(seed + para_index)
+
+    # Shuffle paragraphs
+    shuffled_paragraphs = paragraphs.copy()
+    random.shuffle(shuffled_paragraphs)
+
+    return reconstruct_reasoning(shuffled_paragraphs)
+
+
 def create_ablated_prompt(
     original_data: Dict,
     ablated_reasoning: str,
@@ -252,7 +293,7 @@ async def process_ablation_async(
 
     # Determine strategies to run
     if strategy == 'all':
-        strategies_to_run = ['keep_later', 'remove_after', 'random_sample']
+        strategies_to_run = ['keep_later', 'remove_after', 'random_sample', 'random_sample_50', 'shuffle']
     else:
         strategies_to_run = [strategy]
 
@@ -280,6 +321,10 @@ async def process_ablation_async(
                     ablated_reasoning = ablate_paragraph_remove_after(paragraphs, para_idx)
                 elif strat == 'random_sample':
                     ablated_reasoning = ablate_random_sample(paragraphs, para_idx)
+                elif strat == 'random_sample_50':
+                    ablated_reasoning = ablate_random_sample_50(paragraphs, para_idx)
+                elif strat == 'shuffle':
+                    ablated_reasoning = ablate_shuffle(paragraphs, para_idx)
 
                 # Create ablated prompt with think mode
                 ablated_prompt = create_ablated_prompt(
@@ -448,7 +493,7 @@ Examples:
     )
     parser.add_argument(
         '--strategy',
-        choices=['keep_later', 'remove_after', 'random_sample', 'all'],
+        choices=['keep_later', 'remove_after', 'random_sample', 'random_sample_50', 'shuffle', 'all'],
         default='all',
         help='Ablation strategy (default: all)'
     )

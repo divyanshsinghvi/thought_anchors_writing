@@ -22,11 +22,11 @@ MODEL_NAME = "qwen/qwen3-14b"
 
 # Evaluation configuration
 DEFAULT_EVALUATOR_MODELS = [
-    "qwen/qwen3-14b:free",
-    "moonshotai/kimi-k2-0905",
-    "openai/gpt-5",
+    # "qwen/qwen3-14b:free",
+    # "moonshotai/kimi-k2-0905",
+    # "openai/gpt-5",
     "openai/gpt-5-mini",
-    "deepseek/deepseek-r1-0528:free",
+    # "deepseek/deepseek-r1-0528:free",
     # Add more evaluator models here to reduce bias
     # "Qwen/Qwen2.5-72B-Instruct",
     # "meta-llama/llama-3.1-70b-instruct",
