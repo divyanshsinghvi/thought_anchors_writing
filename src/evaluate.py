@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 import os
 from tqdm import tqdm
 import hashlib
+import numpy as np
 
 def evaluate(samples:List[dict], device: str = "cuda", batch_size: int = 8,
             tokenizer: AutoTokenizer = None,
@@ -126,6 +127,12 @@ if __name__ == "__main__":
         "--test",
         action="store_true",
         help="Test mode: only process first 2 files from each directory"
+    )
+    parser.add_argument(
+        "--num-evals",
+        type=int,
+        default=10,
+        help="Number of times to evaluate each sample (default: 10). Supports incremental evaluation."
     )
 
     args = parser.parse_args()
@@ -262,21 +269,15 @@ if __name__ == "__main__":
                     # Compute checksum
                     checksum = compute_file_checksum(str(fpath))
 
-                    # Check if already evaluated with same checksum
-                    if checksum in existing_results:
-                        # Skip - already evaluated with same content
-                        new_results[checksum] = existing_results[checksum]
-                        total_skipped += 1
-                        continue
-
-                    # Need to evaluate this file
+                    # Load file data
                     with open(fpath, "r") as f:
                         data = json.load(f)
                     prompt_text = data.get("prompt_text", "")
                     content = data.get("rollout_data", {}).get("content", "")
 
-                    # Prepare metadata
+                    # Prepare base metadata
                     rel_file_path = fpath.relative_to(input_path)
+                    ablation_metadata = data.get("ablation_metadata", {})
                     metadata = {
                         "rollout_name": rollout_key,
                         "filename": fn,
@@ -284,11 +285,37 @@ if __name__ == "__main__":
                         "absolute_path": str(fpath.absolute()),
                         "checksum": checksum,
                         "prompt_id": data.get("prompt_id", "unknown"),
-                        "strategy": data.get("strategy", "unknown"),
-                        "think_mode": data.get("think_mode", "unknown"),
-                        "para_index": data.get("para_index", -1),
+                        "strategy": ablation_metadata.get("strategy", "unknown"),
+                        "think_mode": ablation_metadata.get("think_mode", "unknown"),
+                        "para_index": ablation_metadata.get("ablated_paragraph_index", -1),
+                        "total_original_paragraphs": ablation_metadata.get("total_original_paragraphs", -1),
+                        "remaining_paragraphs": ablation_metadata.get("remaining_paragraphs", -1),
                         "rollout_index": data.get("rollout_index", -1),
                     }
+
+                    # Check if already evaluated with same checksum
+                    existing_evals = 0
+                    existing_scores = []
+                    if checksum in existing_results:
+                        existing_entry = existing_results[checksum]
+                        # Count existing evaluations (score_1, score_2, ...)
+                        existing_evals = sum(1 for key in existing_entry if key.startswith("score_") and key[6:].isdigit())
+
+                        if existing_evals >= args.num_evals:
+                            # Already have enough evaluations, skip
+                            new_results[checksum] = existing_entry
+                            total_skipped += 1
+                            continue
+                        else:
+                            # Load existing scores
+                            for i in range(1, existing_evals + 1):
+                                existing_scores.append(existing_entry.get(f"score_{i}"))
+
+                    # Need more evaluations
+                    evals_needed = args.num_evals - existing_evals
+                    metadata["existing_evals"] = existing_evals
+                    metadata["existing_scores"] = existing_scores
+                    metadata["evals_needed"] = evals_needed
 
                     samples_to_eval.append({"prompt_text": prompt_text, "content": content})
                     file_metadata_to_eval.append(metadata)
@@ -299,18 +326,38 @@ if __name__ == "__main__":
 
             # Evaluate only new/changed files
             if samples_to_eval:
-                local_batch_size = min(args.batch_size, len(samples_to_eval))
-                scores = evaluate(samples_to_eval, device=selected_device, batch_size=local_batch_size,
-                                tokenizer=tokenizer, reward_model=reward_model)
-
-                # Update results with new scores and metadata
-                for metadata, score in zip(file_metadata_to_eval, scores):
+                # Process each sample with incremental evaluation
+                for idx, metadata in enumerate(file_metadata_to_eval):
                     checksum = metadata["checksum"]
+                    existing_evals = metadata["existing_evals"]
+                    existing_scores = metadata["existing_scores"]
+                    evals_needed = metadata["evals_needed"]
+
+                    # Collect all scores (existing + new)
+                    all_sample_scores = list(existing_scores)  # Start with existing scores
+
+                    # Run remaining evaluations
+                    sample_data = samples_to_eval[idx]
+                    for eval_run in range(evals_needed):
+                        score = evaluate([sample_data], device=selected_device, batch_size=1,
+                                        tokenizer=tokenizer, reward_model=reward_model)
+                        all_sample_scores.append(score[0])
+
+                    # Build score dictionary
+                    score_dict = {f"score_{i+1}": score for i, score in enumerate(all_sample_scores)}
+                    score_dict["score_mean"] = float(np.mean(all_sample_scores))
+                    score_dict["score_std"] = float(np.std(all_sample_scores))
+
+                    # Remove temporary metadata fields
+                    clean_metadata = {k: v for k, v in metadata.items()
+                                     if k not in ["existing_evals", "existing_scores", "evals_needed"]}
+
+                    # Store results
                     new_results[checksum] = {
-                        **metadata,
-                        "score": score,
+                        **clean_metadata,
+                        **score_dict,
                     }
-                    total_evaluated += 1
+                    total_evaluated += evals_needed
 
             # Write updated results
             try:
