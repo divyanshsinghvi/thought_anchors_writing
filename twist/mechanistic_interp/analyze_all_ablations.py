@@ -394,6 +394,7 @@ def analyze_single_ablation(
     result['ablation_reasoning_presence'] = deepcopy(default_presence)
     result['presence_source'] = None
     result['presence_model'] = None
+    result['presence_fields_requested'] = []
 
     if presence_classifier is not None:
         presence_prompts = {
@@ -403,6 +404,7 @@ def analyze_single_ablation(
             'ablation_reasoning_presence': build_presence_prompt(ablation_reasoning if analyze_reasoning else None, clean_twist, corrupted_twist),
         }
         result['_presence_prompts'] = presence_prompts
+        result['presence_fields_requested'] = [field for field, prompt in presence_prompts.items() if prompt]
         result['presence_source'] = 'llm'
         result['presence_model'] = presence_model_name
 
@@ -421,6 +423,8 @@ def analyze_baseline_think_mode(
     presence_model_name: Optional[str] = None
 ) -> Dict:
     """Analyze all ablations for one baseline × think_mode combination."""
+
+    global PRESENCE_PARSE_WARNING_COUNT
 
     print(f"\nAnalyzing {baseline_id} × {think_mode}")
     print("=" * 80)
@@ -465,6 +469,8 @@ def analyze_baseline_think_mode(
         print(f"  ✓ {target_id}: content={result['content_prefers']}, reasoning={reasoning_str}")
 
     # Run presence model in batch (if available)
+    presence_warning_before = PRESENCE_PARSE_WARNING_COUNT
+
     if presence_classifier is not None and ablations:
         prompts = []
         index_map = []
@@ -480,6 +486,9 @@ def analyze_baseline_think_mode(
             presence_results = run_presence_batch(presence_classifier, prompts, threshold=presence_threshold)
             for (result, field), presence in zip(index_map, presence_results):
                 result[field] = presence
+
+    presence_warning_after = PRESENCE_PARSE_WARNING_COUNT
+    presence_warning_delta = presence_warning_after - presence_warning_before
 
     # Compute summary statistics
     if ablations:
@@ -539,8 +548,20 @@ def analyze_baseline_think_mode(
         if presence_classifier is not None:
             def summarize_presence_field(field: str) -> Dict[str, Dict[str, Optional[float]]]:
                 summary_data = {
-                    'clean': {'present_count': 0, 'total': 0, 'confidence_avg': None},
-                    'corrupted': {'present_count': 0, 'total': 0, 'confidence_avg': None}
+                    'clean': {
+                        'present_count': 0,
+                        'total': 0,
+                        'confidence_avg': None,
+                        'requested': 0,
+                        'parsed': 0,
+                    },
+                    'corrupted': {
+                        'present_count': 0,
+                        'total': 0,
+                        'confidence_avg': None,
+                        'requested': 0,
+                        'parsed': 0,
+                    }
                 }
 
                 clean_confidences = []
@@ -548,6 +569,10 @@ def analyze_baseline_think_mode(
 
                 for ablation in ablations:
                     presence = ablation.get(field) or empty_presence()
+                    requested_fields = set(ablation.get('presence_fields_requested') or [])
+                    if field in requested_fields:
+                        summary_data['clean']['requested'] += 1
+                        summary_data['corrupted']['requested'] += 1
 
                     clean_present = presence['clean'].get('present')
                     if clean_present is not None:
@@ -557,6 +582,9 @@ def analyze_baseline_think_mode(
                     clean_conf = presence['clean'].get('confidence')
                     if isinstance(clean_conf, (int, float)):
                         clean_confidences.append(clean_conf)
+                        summary_data['clean']['parsed'] += 1
+                    elif clean_present is not None:
+                        summary_data['clean']['parsed'] += 1
 
                     corrupt_present = presence['corrupted'].get('present')
                     if corrupt_present is not None:
@@ -566,6 +594,9 @@ def analyze_baseline_think_mode(
                     corrupt_conf = presence['corrupted'].get('confidence')
                     if isinstance(corrupt_conf, (int, float)):
                         corrupt_confidences.append(corrupt_conf)
+                        summary_data['corrupted']['parsed'] += 1
+                    elif corrupt_present is not None:
+                        summary_data['corrupted']['parsed'] += 1
 
                 if clean_confidences:
                     summary_data['clean']['confidence_avg'] = sum(clean_confidences) / len(clean_confidences)
@@ -585,6 +616,7 @@ def analyze_baseline_think_mode(
             summary['presence_model'] = presence_model_name
             summary['presence_source'] = 'llm'
             summary['presence_threshold'] = presence_threshold
+            summary['presence_parse_warnings'] = max(presence_warning_delta, 0)
 
         print(f"\n  Summary:")
         print(f"    Content prefers clean: {content_prefers_clean}/{len(ablations)} ({100*content_prefers_clean/len(ablations):.1f}%)")
@@ -611,27 +643,40 @@ def analyze_baseline_think_mode(
                     clean_pct = 100 * clean['present_count'] / clean['total']
                     clean_conf = clean['confidence_avg']
                     clean_conf_str = f", avg conf {clean_conf:.2f}" if clean_conf is not None else ""
+                    parsed_str = f", parsed {clean['parsed']}/{clean['requested']}" if clean['requested'] else ""
                     print(
                         f"      {label} – clean: {clean['present_count']}/{clean['total']}"
-                        f" ({clean_pct:.1f}%{clean_conf_str})"
+                        f" ({clean_pct:.1f}%{clean_conf_str}{parsed_str})"
                     )
                 else:
-                    print(f"      {label} – clean: N/A")
+                    requested = clean['requested']
+                    if requested:
+                        print(f"      {label} – clean: 0/{requested} (parsed 0/{requested})")
+                    else:
+                        print(f"      {label} – clean: N/A")
 
                 if corrupt['total']:
                     corrupt_pct = 100 * corrupt['present_count'] / corrupt['total']
                     corrupt_conf = corrupt['confidence_avg']
                     corrupt_conf_str = f", avg conf {corrupt_conf:.2f}" if corrupt_conf is not None else ""
+                    parsed_str = f", parsed {corrupt['parsed']}/{corrupt['requested']}" if corrupt['requested'] else ""
                     print(
                         f"      {label} – corrupted: {corrupt['present_count']}/{corrupt['total']}"
-                        f" ({corrupt_pct:.1f}%{corrupt_conf_str})"
+                        f" ({corrupt_pct:.1f}%{corrupt_conf_str}{parsed_str})"
                     )
                 else:
-                    print(f"      {label} – corrupted: N/A")
+                    requested = corrupt['requested']
+                    if requested:
+                        print(f"      {label} – corrupted: 0/{requested} (parsed 0/{requested})")
+                    else:
+                        print(f"      {label} – corrupted: N/A")
 
             model_info = summary.get('presence_model')
             if model_info:
                 print(f"      Model: {model_info} (threshold={summary.get('presence_threshold')})")
+            warning_count = summary.get('presence_parse_warnings')
+            if warning_count:
+                print(f"      Parse warnings (this batch): {warning_count}")
     else:
         summary = {}
 
@@ -712,6 +757,9 @@ def main():
     presence_classifier = None
     if args.presence_model:
         presence_classifier = load_presence_model(args.presence_model)
+
+    global PRESENCE_PARSE_WARNING_COUNT
+    PRESENCE_PARSE_WARNING_COUNT = 0
 
     # Paths
     stories_dir = OUTPUT_DIR_BASE_PATH / "stories"
