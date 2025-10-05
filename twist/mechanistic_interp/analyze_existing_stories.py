@@ -10,6 +10,7 @@ Key Question: When Outline says X but Plan talks about Y, which does the model f
 
 import json
 import sys
+import argparse
 from pathlib import Path
 from typing import Dict, List
 
@@ -20,9 +21,19 @@ from twist.config import OUTPUT_DIR_BASE_PATH
 
 def load_ablation_data(
     baseline_id: str = "twist_001",
-    ablation_dir: Path = OUTPUT_DIR_BASE_PATH / "ablation_outputs"
+    ablation_dir: Path = OUTPUT_DIR_BASE_PATH / "ablation_outputs",
+    think_mode: str = "no_more_thinking",
+    max_rollouts_per_twist: int = None
 ) -> dict:
-    """Load baseline and ablation data."""
+    """
+    Load baseline and ablation data for experiments.
+
+    Args:
+        baseline_id: ID of baseline story (e.g., "twist_001")
+        ablation_dir: Directory containing ablation outputs
+        think_mode: Which think mode to analyze ("no_more_thinking" or "allow_more_thinking")
+        max_rollouts_per_twist: Max rollouts to load per twist (None = all)
+    """
     baseline_file = OUTPUT_DIR_BASE_PATH / "stories" / f"{baseline_id}.json"
     with open(baseline_file, 'r') as f:
         baseline_data = json.load(f)
@@ -33,10 +44,20 @@ def load_ablation_data(
         if twist_id == baseline_id:
             continue
 
-        rollout_file = twist_dir / "no_more_thinking" / "rollout_000.json"
-        if rollout_file.exists():
+        rollout_dir = twist_dir / think_mode
+        if not rollout_dir.exists():
+            continue
+
+        # Load all rollouts (or up to max)
+        rollout_files = sorted(rollout_dir.glob("rollout_*.json"))
+        if max_rollouts_per_twist:
+            rollout_files = rollout_files[:max_rollouts_per_twist]
+
+        for rollout_file in rollout_files:
             with open(rollout_file, 'r') as f:
-                ablation_data[twist_id] = json.load(f)
+                rollout_data = json.load(f)
+                rollout_key = f"{twist_id}_{rollout_file.stem}"
+                ablation_data[rollout_key] = rollout_data
 
     return {'baseline': baseline_data, 'ablations': ablation_data}
 
@@ -144,15 +165,52 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='Analyze existing generated stories for twist realization'
+    )
+    parser.add_argument(
+        '--baseline',
+        type=str,
+        default='twist_001',
+        help='Baseline story ID (default: twist_001)'
+    )
+    parser.add_argument(
+        '--think-mode',
+        type=str,
+        choices=['no_more_thinking', 'allow_more_thinking'],
+        default='no_more_thinking',
+        help='Which think mode to analyze (default: no_more_thinking)'
+    )
+    parser.add_argument(
+        '--max-rollouts',
+        type=int,
+        default=None,
+        help='Max rollouts to analyze per twist (default: all)'
+    )
+
+    args = parser.parse_args()
+
     print("="*80)
     print("Analyzing Existing Generated Stories")
     print("="*80)
+    print(f"\nConfiguration:")
+    print(f"  Baseline: {args.baseline}")
+    print(f"  Think mode: {args.think_mode}")
+    print(f"  Max rollouts per twist: {args.max_rollouts or 'all'}")
 
     # Load data
     print("\nLoading ablation data...")
-    data = load_ablation_data()
+    data = load_ablation_data(
+        baseline_id=args.baseline,
+        think_mode=args.think_mode,
+        max_rollouts_per_twist=args.max_rollouts
+    )
     print(f"  Baseline: {data['baseline']['prompt_id']}")
-    print(f"  Ablations: {list(data['ablations'].keys())}")
+    print(f"  Total ablation rollouts loaded: {len(data['ablations'])}")
+
+    if not data['ablations']:
+        print("\n⚠ No ablation data found. Run twist_ablation.py first.")
+        return
 
     # Analyze each pair
     print("\n" + "="*80)
