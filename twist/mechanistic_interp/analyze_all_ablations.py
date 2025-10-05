@@ -85,9 +85,19 @@ def load_semantic_model(model_type: str = "qwen"):
         return SentenceTransformer(model_type)
 
 
-def compute_semantic_similarity(text1: str, text2: str, model) -> float:
+def compute_semantic_similarity(text1, text2, model) -> float:
     """Compute cosine similarity between two texts."""
     if model is None:
+        return 0.0
+
+    # Ensure both inputs are strings
+    if not isinstance(text1, str):
+        text1 = str(text1) if text1 is not None else ""
+    if not isinstance(text2, str):
+        text2 = str(text2) if text2 is not None else ""
+
+    # Handle empty strings
+    if not text1 or not text2:
         return 0.0
 
     embeddings = model.encode([text1, text2], convert_to_numpy=True)
