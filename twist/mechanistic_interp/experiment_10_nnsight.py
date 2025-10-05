@@ -120,20 +120,15 @@ def compute_keyword_probability(
     return np.mean(keyword_probs) if keyword_probs else 0.0
 
 
-def patch_single_head_nnsight(
+def patch_layer_nnsight(
     model: LanguageModel,
     tokenizer: AutoTokenizer,
     source_prompt: str,
     target_prompt: str,
     layer: int,
-    head: int,
     clean_keywords: List[str]
 ) -> Dict:
-    """
-    Patch a single head using NNsight.
-
-    NNsight allows us to intervene on activations during the forward pass.
-    """
+    """Layer-level patch using NNsight with proper tracing and length alignment."""
 
     # Baseline (no patching)
     baseline_prob = compute_keyword_probability(model, tokenizer, target_prompt, clean_keywords)
@@ -142,23 +137,27 @@ def patch_single_head_nnsight(
     source_inputs = tokenizer(source_prompt, return_tensors="pt").to(DEVICE)
     target_inputs = tokenizer(target_prompt, return_tensors="pt").to(DEVICE)
 
-    # Get source activation for this head
-    with model.trace(source_inputs) as tracer:
-        # Access attention head output: model.model.layers[layer].self_attn.o_proj
-        # For Qwen models, structure is: model.model.layers[L].self_attn
-        source_head_output = model.model.layers[layer].self_attn.o_proj.output.save()
+    # Capture source layer output
+    with model.trace(source_inputs) as t_src:
+        src_o_proj = t_src(model.model.layers[layer].self_attn.o_proj).output.save()
+        _ = model(**source_inputs)
+    source_activation = src_o_proj.value
 
-    source_activation = source_head_output.value
+    # Patch into target with alignment
+    with model.trace(target_inputs) as t_tgt:
+        tgt_o_proj = t_tgt(model.model.layers[layer].self_attn.o_proj).output
+        _ = model(**target_inputs)
 
-    # Patch into target
-    with model.trace(target_inputs) as tracer:
-        # Intervene on the same head in target
-        # Note: This patches the entire attention output - you may need to adjust
-        # to patch specific head if model architecture supports it
-        model.model.layers[layer].self_attn.o_proj.output = source_activation
+        try:
+            tgt_val = tgt_o_proj.value
+        except Exception:
+            _ = t_tgt(model.model.layers[layer].self_attn.o_proj).output.save()
+            tgt_val = tgt_o_proj.value
 
-        # Run through rest of model
-        patched_logits = model.lm_head.output.save()
+        min_len = min(source_activation.shape[1], tgt_val.shape[1])
+        tgt_o_proj[:, :min_len, :] = source_activation[:, :min_len, :]
+
+        patched_logits = t_tgt(model.lm_head).output.save()
 
     # Compute patched probability
     # Ensure tensor is materialized on CPU before .item()
@@ -176,10 +175,9 @@ def patch_single_head_nnsight(
 
     return {
         'layer': layer,
-        'head': head,
-        'baseline_prob': baseline_prob,
-        'patched_prob': patched_prob,
-        'delta': patched_prob - baseline_prob
+        'baseline_prob': float(baseline_prob),
+        'patched_prob': float(patched_prob),
+        'delta': float(patched_prob - baseline_prob)
     }
 
 
@@ -207,14 +205,9 @@ def scan_layer_nnsight(
     results = []
 
     try:
-        # Get number of heads from model config
-        n_heads = model.config.num_attention_heads
-
-        # For simplicity, we'll do layer-level patching first
-        # Head-level requires more architecture-specific code
-        result = patch_single_head_nnsight(
-            model, tokenizer, source_prompt, target_prompt,
-            layer, 0, clean_keywords  # head=0 placeholder
+        # Layer-level patching first (head-level requires arch-specific hooks)
+        result = patch_layer_nnsight(
+            model, tokenizer, source_prompt, target_prompt, layer, clean_keywords
         )
         result['head'] = 'all'  # Mark as layer-level
         results.append(result)
@@ -298,14 +291,14 @@ def main():
         all_results.extend(layer_results)
 
     # Sort and save
-    all_results_sorted = sorted(all_results, key=lambda x: x['delta'], reverse=True)
+    all_results_sorted = sorted(all_results, key=lambda x: x.get('delta', 0.0), reverse=True)
 
     output_file = OUTPUT_DIR / f"pair{args.pair}_nnsight_results.json"
     with open(output_file, 'w') as f:
         json.dump({
             'pair_config': config,
             'model': args.model,
-            'total_layers': len(all_results),
+            'total_layers': n_layers,
             'results': all_results_sorted,
             'top_10': all_results_sorted[:10]
         }, f, indent=2)
