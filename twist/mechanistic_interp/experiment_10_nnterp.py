@@ -252,7 +252,8 @@ def run_layer_patch(
     temperature: float = 0.0,
     top_p: float = 1.0,
     samples: int = 1,
-    dump_texts_dir: Optional[Path] = None
+    dump_texts_dir: Optional[Path] = None,
+    show_example: bool = False
 ) -> Dict:
     # Baseline on target (support multi-sample averaging for counts)
     baseline_clean = 0.0
@@ -273,7 +274,7 @@ def run_layer_patch(
             baseline_corr += c_corr
             base_presence_clean += int(c_clean > 0)
             base_presence_corr += int(c_corr > 0)
-            if dump_texts_dir is not None:
+            if dump_texts_dir is not None or show_example:
                 baseline_texts.append(txt)
         baseline_clean /= reps
         baseline_corr /= reps
@@ -310,7 +311,7 @@ def run_layer_patch(
                 patched_corr_acc += c_corr
                 pat_presence_clean += int(c_clean > 0)
                 pat_presence_corr += int(c_corr > 0)
-                if dump_texts_dir is not None:
+                if dump_texts_dir is not None or show_example:
                     patched_texts.append(txt)
             patched_clean = patched_clean_acc / reps
             patched_corr  = patched_corr_acc / reps
@@ -340,7 +341,7 @@ def run_layer_patch(
                 patched_corr_acc += c_corr
                 pat_presence_clean += int(c_clean > 0)
                 pat_presence_corr += int(c_corr > 0)
-                if dump_texts_dir is not None:
+                if dump_texts_dir is not None or show_example:
                     patched_texts.append(txt)
             patched_clean = patched_clean_acc / reps
             patched_corr  = patched_corr_acc / reps
@@ -385,7 +386,7 @@ def run_layer_patch(
         })
 
     # Optionally dump texts
-    if dump_texts_dir is not None and metric == 'counts':
+    if (dump_texts_dir is not None or show_example) and metric == 'counts':
         dump_texts_dir.mkdir(parents=True, exist_ok=True)
         # dump only first sample when samples>1 to save disk
         try:
@@ -395,6 +396,13 @@ def run_layer_patch(
                 (dump_texts_dir / f"layer{layer:02d}_patched.txt").write_text(patched_texts[0])
         except Exception:
             pass
+
+    # Include first sample texts in result for printing
+    if metric == 'counts':
+        if baseline_texts:
+            result['baseline_text'] = baseline_texts[0]
+        if 'patched_texts' in locals() and patched_texts:
+            result['patched_text'] = patched_texts[0]
 
     return result
 
@@ -427,6 +435,7 @@ def main():
     parser.add_argument('--device', type=str, default=None, choices=['cpu','cuda'])
     parser.add_argument('--samples', type=int, default=1, help='Number of stochastic samples to average (set temperature>0)')
     parser.add_argument('--dump-texts', action='store_true', help='Dump baseline/patched continuations for each layer')
+    parser.add_argument('--show-example', action='store_true', help='Print exact prompts and first baseline/patched continuations')
     args = parser.parse_args()
 
     config = MATCHED_PAIRS[args.pair - 1]
@@ -501,7 +510,8 @@ def main():
                 temperature=args.temperature,
                 top_p=args.top_p,
                 samples=args.samples,
-                dump_texts_dir=(samples_dir if args.dump_texts else None)
+                dump_texts_dir=(samples_dir if args.dump_texts else None),
+                show_example=args.show_example
             )
             results.append(res)
         except RuntimeError as e:
@@ -548,6 +558,38 @@ def main():
                 f"{r.get('patched_corr_minus_clean', 0.0):<18.6f} "
                 f"{r.get('delta_corr_minus_clean', 0.0):+10.6f}"
             )
+
+    # Print a detailed example (prompts + first continuations)
+    if args.show_example and results_sorted:
+        # Choose the explicitly requested layer if provided; otherwise top-1
+        example = None
+        if args.layer is not None:
+            for r in results_sorted:
+                if r['layer'] == args.layer:
+                    example = r
+                    break
+        if example is None:
+            example = results_sorted[0]
+
+        print("\n=== EXAMPLE COMPARISON ===")
+        print(f"Layer: {example['layer']}  Location: {args.location}")
+        print("\n-- Source (capture) prompt (no_more_thinking) --\n")
+        print(source_prompt)
+        print("\n-- Target prompt (allow_more_thinking; same text for baseline & patched) --\n")
+        print(target_prompt)
+
+        base_txt = example.get('baseline_text')
+        pat_txt  = example.get('patched_text')
+        if base_txt is not None:
+            print("\n-- Baseline continuation (first sample) --\n")
+            print(base_txt)
+        else:
+            print("\n(no baseline text captured; try --metric counts and/or --show-example)")
+        if pat_txt is not None:
+            print("\n-- Patched continuation (first sample) --\n")
+            print(pat_txt)
+        else:
+            print("\n(no patched text captured; try --metric counts and/or --show-example)")
 
 
 if __name__ == "__main__":
