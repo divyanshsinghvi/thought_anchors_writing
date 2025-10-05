@@ -148,64 +148,35 @@ def load_ablation_data(
     return {'baseline': baseline_data, 'ablations': ablation_data}
 
 
-def split_into_sentences(text: str) -> List[str]:
-    """Split text into sentences using simple heuristics."""
-    # Split on period, exclamation, question mark followed by space or newline
-    sentences = re.split(r'[.!?]+[\s\n]+', text)
-    # Clean up and filter empty
-    sentences = [s.strip() for s in sentences if s.strip()]
-    return sentences
-
-
-def semantic_similarity_check(
-    story: str,
-    twist_phrase: str,
+def compute_semantic_similarity(
+    text1: str,
+    text2: str,
     model = None  # Can be SentenceTransformer or QwenEmbeddings
-) -> Dict:
+) -> float:
     """
-    Check semantic similarity between story sentences and twist phrase.
+    Compute semantic similarity between two texts using full paragraph embeddings.
 
-    Returns max similarity score and the most similar sentence.
+    Args:
+        text1: First text (e.g., story content)
+        text2: Second text (e.g., twist phrase)
+        model: Embedding model (SentenceTransformer or QwenEmbeddings)
+
+    Returns:
+        Cosine similarity score (0-1)
     """
     if model is None:
-        return {
-            'max_similarity': 0.0,
-            'most_similar_sentence': '',
-            'all_similarities': []
-        }
+        return 0.0
 
-    # Split story into sentences
-    sentences = split_into_sentences(story)
-    if not sentences:
-        return {
-            'max_similarity': 0.0,
-            'most_similar_sentence': '',
-            'all_similarities': []
-        }
+    # Encode both texts
+    embeddings = model.encode([text1, text2], convert_to_numpy=True)
+    emb1, emb2 = embeddings[0], embeddings[1]
 
-    # Encode twist and sentences
-    twist_embedding = model.encode([twist_phrase], convert_to_numpy=True)[0]
-    sentence_embeddings = model.encode(sentences, convert_to_numpy=True)
+    # Compute cosine similarity
+    similarity = np.dot(emb1, emb2) / (
+        np.linalg.norm(emb1) * np.linalg.norm(emb2)
+    )
 
-    # Compute cosine similarities
-    similarities = []
-    for sent_emb in sentence_embeddings:
-        similarity = np.dot(twist_embedding, sent_emb) / (
-            np.linalg.norm(twist_embedding) * np.linalg.norm(sent_emb)
-        )
-        similarities.append(float(similarity))
-
-    # Find max
-    max_idx = int(np.argmax(similarities))
-    max_similarity = similarities[max_idx]
-    most_similar_sentence = sentences[max_idx]
-
-    return {
-        'max_similarity': max_similarity,
-        'most_similar_sentence': most_similar_sentence,
-        'all_similarities': similarities,
-        'num_sentences': len(sentences)
-    }
+    return float(similarity)
 
 
 def check_twist_in_story(story: str, twist_phrase: str) -> Dict:
@@ -262,100 +233,98 @@ def check_twist_in_story(story: str, twist_phrase: str) -> Dict:
 def analyze_story_pair(
     baseline_data: dict,
     ablation_data: dict,
-    semantic_model: SentenceTransformer = None,
+    semantic_model = None,
     use_semantic: bool = False
 ) -> Dict:
     """
-    Analyze a baseline/ablation pair.
+    Analyze a baseline/ablation pair with semantic similarity.
 
-    Baseline: Outline has baseline_twist, Plan talks about baseline_twist
-    Ablation: Outline has new_twist, Plan talks about baseline_twist (CONTAMINATED!)
+    Key metrics (4 semantic similarities):
+    1. baseline_content vs clean_twist (should be high)
+    2. baseline_content vs corrupted_twist (should be low)
+    3. ablation_content vs clean_twist (tests if reasoning filters corruption)
+    4. ablation_content vs corrupted_twist (tests if outline corrupts output)
 
-    Check: Does ablation story use new_twist (Outline) or baseline_twist (Plan)?
+    Additional:
+    5. baseline_reasoning vs clean_twist
+    6. baseline_reasoning vs corrupted_twist
+    7. ablation_reasoning vs clean_twist
+    8. ablation_reasoning vs corrupted_twist
     """
-    # Extract stories
+    # Extract data
     baseline_story = baseline_data['response']['responses'][0]['content']
     ablation_story = ablation_data['rollout_data']['content']
-    
+
     baseline_reasoning = baseline_data['response']['responses'][0]['reasoning']
     ablation_reasoning = ablation_data['rollout_data']['reasoning']
 
-    # Extract twists
-    baseline_twist = baseline_data['twist_phrase']
-    new_twist = ablation_data['new_twist']
+    # Twists
+    clean_twist = baseline_data['twist_phrase']  # The correct twist
+    corrupted_twist = ablation_data['new_twist']  # The swapped twist in ablation
 
-    # Check baseline story (should use baseline_twist)
-    baseline_check = check_twist_in_story(baseline_story, baseline_twist)
-
-    # Check ablation story for both twists
-    ablation_baseline_check = check_twist_in_story(ablation_story, baseline_twist)  # Plan twist
-    ablation_new_check = check_twist_in_story(ablation_story, new_twist)  # Outline twist
-
-    # Semantic similarity checks (if enabled)
-    baseline_semantic = {}
-    ablation_baseline_semantic = {}
-    ablation_new_semantic = {}
-
-    if use_semantic and semantic_model is not None:
-        baseline_semantic = semantic_similarity_check(baseline_story, baseline_twist, semantic_model)
-        ablation_baseline_semantic = semantic_similarity_check(ablation_story, baseline_twist, semantic_model)
-        ablation_new_semantic = semantic_similarity_check(ablation_story, new_twist, semantic_model)
-
-    # Determine behavior (indicator-based)
-    if ablation_new_check['twist_realized'] and not ablation_baseline_check['twist_realized']:
-        behavior = "FOLLOWS_OUTLINE"
-    elif ablation_baseline_check['twist_realized'] and not ablation_new_check['twist_realized']:
-        behavior = "FOLLOWS_PLAN"
-    elif ablation_new_check['twist_realized'] and ablation_baseline_check['twist_realized']:
-        behavior = "USES_BOTH"
-    else:
-        behavior = "USES_NEITHER"
-
-    # Determine behavior based on semantic similarity (if enabled)
-    semantic_behavior = None
-    if use_semantic and semantic_model is not None:
-        plan_sim = ablation_baseline_semantic.get('max_similarity', 0.0)
-        outline_sim = ablation_new_semantic.get('max_similarity', 0.0)
-
-        # Use threshold and comparison
-        THRESHOLD = 0.3  # Minimum similarity to consider
-        if outline_sim > THRESHOLD and plan_sim <= THRESHOLD:
-            semantic_behavior = "FOLLOWS_OUTLINE"
-        elif plan_sim > THRESHOLD and outline_sim <= THRESHOLD:
-            semantic_behavior = "FOLLOWS_PLAN"
-        elif plan_sim > THRESHOLD and outline_sim > THRESHOLD:
-            semantic_behavior = "USES_BOTH"
-        else:
-            semantic_behavior = "USES_NEITHER"
+    # Check baseline story (indicator-based, keep for reference)
+    baseline_check = check_twist_in_story(baseline_story, clean_twist)
+    ablation_clean_check = check_twist_in_story(ablation_story, clean_twist)
+    ablation_corrupted_check = check_twist_in_story(ablation_story, corrupted_twist)
 
     result = {
         'baseline_id': baseline_data['prompt_id'],
         'ablation_id': ablation_data['twist_prompt_id'],
-        'baseline_twist': baseline_twist,
-        'new_twist': new_twist,
+        'clean_twist': clean_twist,
+        'corrupted_twist': corrupted_twist,
         'baseline_story': baseline_story,
         'ablation_story': ablation_story,
-        'baseline_uses_correct_twist': baseline_check['twist_realized'],
-        'baseline_indicators': baseline_check['indicators_found'],
-        'ablation_uses_outline_twist': ablation_new_check['twist_realized'],
-        'ablation_outline_indicators': ablation_new_check['indicators_found'],
-        'ablation_uses_plan_twist': ablation_baseline_check['twist_realized'],
-        'ablation_plan_indicators': ablation_baseline_check['indicators_found'],
-        'model_behavior': behavior,
         'baseline_reasoning': baseline_reasoning,
-        'ablation_reasoning': ablation_reasoning
+        'ablation_reasoning': ablation_reasoning,
+
+        # Indicator-based (legacy)
+        'baseline_has_clean_twist_indicator': baseline_check['twist_realized'],
+        'ablation_has_clean_twist_indicator': ablation_clean_check['twist_realized'],
+        'ablation_has_corrupted_twist_indicator': ablation_corrupted_check['twist_realized'],
     }
 
-    # Add semantic similarity results if enabled
+    # Semantic similarity analysis (if enabled)
     if use_semantic and semantic_model is not None:
+        # Core 4 metrics: Content similarities
+        baseline_content_vs_clean = compute_semantic_similarity(
+            baseline_story, clean_twist, semantic_model
+        )
+        baseline_content_vs_corrupted = compute_semantic_similarity(
+            baseline_story, corrupted_twist, semantic_model
+        )
+        ablation_content_vs_clean = compute_semantic_similarity(
+            ablation_story, clean_twist, semantic_model
+        )
+        ablation_content_vs_corrupted = compute_semantic_similarity(
+            ablation_story, corrupted_twist, semantic_model
+        )
+
+        # Additional: Reasoning similarities
+        baseline_reasoning_vs_clean = compute_semantic_similarity(
+            baseline_reasoning, clean_twist, semantic_model
+        )
+        baseline_reasoning_vs_corrupted = compute_semantic_similarity(
+            baseline_reasoning, corrupted_twist, semantic_model
+        )
+        ablation_reasoning_vs_clean = compute_semantic_similarity(
+            ablation_reasoning, clean_twist, semantic_model
+        )
+        ablation_reasoning_vs_corrupted = compute_semantic_similarity(
+            ablation_reasoning, corrupted_twist, semantic_model
+        )
+
         result.update({
-            'semantic_baseline_similarity': baseline_semantic.get('max_similarity', 0.0),
-            'semantic_baseline_sentence': baseline_semantic.get('most_similar_sentence', ''),
-            'semantic_plan_similarity': ablation_baseline_semantic.get('max_similarity', 0.0),
-            'semantic_plan_sentence': ablation_baseline_semantic.get('most_similar_sentence', ''),
-            'semantic_outline_similarity': ablation_new_semantic.get('max_similarity', 0.0),
-            'semantic_outline_sentence': ablation_new_semantic.get('most_similar_sentence', ''),
-            'semantic_behavior': semantic_behavior
+            # Core 4 metrics
+            'baseline_content_vs_clean': baseline_content_vs_clean,
+            'baseline_content_vs_corrupted': baseline_content_vs_corrupted,
+            'ablation_content_vs_clean': ablation_content_vs_clean,
+            'ablation_content_vs_corrupted': ablation_content_vs_corrupted,
+
+            # Reasoning analysis
+            'baseline_reasoning_vs_clean': baseline_reasoning_vs_clean,
+            'baseline_reasoning_vs_corrupted': baseline_reasoning_vs_corrupted,
+            'ablation_reasoning_vs_clean': ablation_reasoning_vs_clean,
+            'ablation_reasoning_vs_corrupted': ablation_reasoning_vs_corrupted,
         })
 
     return result
@@ -460,106 +429,105 @@ def main():
         )
         results.append(result)
 
-        print(f"  Baseline twist: '{result['baseline_twist']}'")
-        print(f"  New twist (Outline): '{result['new_twist']}'")
-        print(f"  Plan twist (contaminated): '{result['baseline_twist']}'")
-        print(f"\n  Baseline story uses correct twist: {result['baseline_uses_correct_twist']}")
-        print(f"    Indicators: {result['baseline_indicators']}")
-        print(f"  Ablation story uses Outline twist: {result['ablation_uses_outline_twist']}")
-        print(f"    Indicators: {result['ablation_outline_indicators']}")
-        print(f"  Ablation story uses Plan twist: {result['ablation_uses_plan_twist']}")
-        print(f"    Indicators: {result['ablation_plan_indicators']}")
-        print(f"  → Model behavior (indicators): {result['model_behavior']}")
+        print(f"  Clean twist: '{result['clean_twist']}'")
+        print(f"  Corrupted twist: '{result['corrupted_twist']}'")
 
         # Semantic similarity results
-        if args.use_semantic and 'semantic_behavior' in result:
-            print(f"\n  Semantic Similarity:")
-            print(f"    Outline twist similarity: {result['semantic_outline_similarity']:.3f}")
-            print(f"      Most similar sentence: \"{result['semantic_outline_sentence'][:100]}...\"")
-            print(f"    Plan twist similarity: {result['semantic_plan_similarity']:.3f}")
-            print(f"      Most similar sentence: \"{result['semantic_plan_sentence'][:100]}...\"")
-            print(f"  → Model behavior (semantic): {result['semantic_behavior']}")
+        if args.use_semantic and 'baseline_content_vs_clean' in result:
+            print(f"\n  CONTENT Semantic Similarities:")
+            print(f"    Baseline content vs clean twist:      {result['baseline_content_vs_clean']:.3f}")
+            print(f"    Baseline content vs corrupted twist:  {result['baseline_content_vs_corrupted']:.3f}")
+            print(f"    Ablation content vs clean twist:      {result['ablation_content_vs_clean']:.3f}")
+            print(f"    Ablation content vs corrupted twist:  {result['ablation_content_vs_corrupted']:.3f}")
 
-        print(f"\n  Baseline story (first 200 chars):")
-        print(f"    {result['baseline_story']}.")
-        print(f"\n  Ablation story (first 200 chars):")
-        print(f"    {result['ablation_story']}.")
-        print(f"\n Baseline reasoning:")
-        print(f"    {result['baseline_reasoning']}.")
-        print(f"\n Ablation reasoning:")
-        print(f"    {result['ablation_reasoning']}.")
+            print(f"\n  REASONING Semantic Similarities:")
+            print(f"    Baseline reasoning vs clean twist:      {result['baseline_reasoning_vs_clean']:.3f}")
+            print(f"    Baseline reasoning vs corrupted twist:  {result['baseline_reasoning_vs_corrupted']:.3f}")
+            print(f"    Ablation reasoning vs clean twist:      {result['ablation_reasoning_vs_clean']:.3f}")
+            print(f"    Ablation reasoning vs corrupted twist:  {result['ablation_reasoning_vs_corrupted']:.3f}")
+
+            # Analysis
+            content_prefers_clean = result['ablation_content_vs_clean'] > result['ablation_content_vs_corrupted']
+            reasoning_prefers_clean = result['ablation_reasoning_vs_clean'] > result['ablation_reasoning_vs_corrupted']
+
+            print(f"\n  Analysis:")
+            print(f"    Ablation content prefers: {'CLEAN' if content_prefers_clean else 'CORRUPTED'}")
+            print(f"    Ablation reasoning prefers: {'CLEAN' if reasoning_prefers_clean else 'CORRUPTED'}")
 
     # Summary
     print("\n" + "="*80)
     print("Summary")
     print("="*80)
 
-    # Indicator-based behavior
-    behaviors = [r['model_behavior'] for r in results]
-    behavior_counts = {
-        'FOLLOWS_OUTLINE': behaviors.count('FOLLOWS_OUTLINE'),
-        'FOLLOWS_PLAN': behaviors.count('FOLLOWS_PLAN'),
-        'USES_BOTH': behaviors.count('USES_BOTH'),
-        'USES_NEITHER': behaviors.count('USES_NEITHER')
-    }
-
-    print(f"\nBehavior Distribution (Indicator-Based):")
-    for behavior, count in behavior_counts.items():
-        pct = (count / len(results)) * 100 if results else 0
-        print(f"  {behavior}: {count}/{len(results)} ({pct:.1f}%)")
-
-    # Semantic-based behavior (if enabled)
     if args.use_semantic:
-        semantic_behaviors = [r.get('semantic_behavior') for r in results if 'semantic_behavior' in r]
-        if semantic_behaviors:
-            semantic_counts = {
-                'FOLLOWS_OUTLINE': semantic_behaviors.count('FOLLOWS_OUTLINE'),
-                'FOLLOWS_PLAN': semantic_behaviors.count('FOLLOWS_PLAN'),
-                'USES_BOTH': semantic_behaviors.count('USES_BOTH'),
-                'USES_NEITHER': semantic_behaviors.count('USES_NEITHER')
-            }
+        # Compute aggregate statistics
+        baseline_clean_sims = [r.get('baseline_content_vs_clean', 0) for r in results if 'baseline_content_vs_clean' in r]
+        baseline_corrupt_sims = [r.get('baseline_content_vs_corrupted', 0) for r in results if 'baseline_content_vs_corrupted' in r]
+        ablation_clean_sims = [r.get('ablation_content_vs_clean', 0) for r in results if 'ablation_content_vs_clean' in r]
+        ablation_corrupt_sims = [r.get('ablation_content_vs_corrupted', 0) for r in results if 'ablation_content_vs_corrupted' in r]
 
-            print(f"\nBehavior Distribution (Semantic-Based):")
-            for behavior, count in semantic_counts.items():
-                pct = (count / len(semantic_behaviors)) * 100 if semantic_behaviors else 0
-                print(f"  {behavior}: {count}/{len(semantic_behaviors)} ({pct:.1f}%)")
+        baseline_reasoning_clean = [r.get('baseline_reasoning_vs_clean', 0) for r in results if 'baseline_reasoning_vs_clean' in r]
+        baseline_reasoning_corrupt = [r.get('baseline_reasoning_vs_corrupted', 0) for r in results if 'baseline_reasoning_vs_corrupted' in r]
+        ablation_reasoning_clean = [r.get('ablation_reasoning_vs_clean', 0) for r in results if 'ablation_reasoning_vs_clean' in r]
+        ablation_reasoning_corrupt = [r.get('ablation_reasoning_vs_corrupted', 0) for r in results if 'ablation_reasoning_vs_corrupted' in r]
 
-            # Show similarity statistics
-            outline_sims = [r.get('semantic_outline_similarity', 0.0) for r in results if 'semantic_outline_similarity' in r]
-            plan_sims = [r.get('semantic_plan_similarity', 0.0) for r in results if 'semantic_plan_similarity' in r]
+        if baseline_clean_sims:
+            print(f"\nCONTENT Semantic Similarity Averages:")
+            print(f"  Baseline content vs clean:      {sum(baseline_clean_sims)/len(baseline_clean_sims):.3f}")
+            print(f"  Baseline content vs corrupted:  {sum(baseline_corrupt_sims)/len(baseline_corrupt_sims):.3f}")
+            print(f"  Ablation content vs clean:      {sum(ablation_clean_sims)/len(ablation_clean_sims):.3f}")
+            print(f"  Ablation content vs corrupted:  {sum(ablation_corrupt_sims)/len(ablation_corrupt_sims):.3f}")
 
-            if outline_sims and plan_sims:
-                print(f"\nSemantic Similarity Statistics:")
-                print(f"  Outline twist - Mean: {sum(outline_sims)/len(outline_sims):.3f}, Max: {max(outline_sims):.3f}")
-                print(f"  Plan twist    - Mean: {sum(plan_sims)/len(plan_sims):.3f}, Max: {max(plan_sims):.3f}")
+            print(f"\nREASONING Semantic Similarity Averages:")
+            print(f"  Baseline reasoning vs clean:      {sum(baseline_reasoning_clean)/len(baseline_reasoning_clean):.3f}")
+            print(f"  Baseline reasoning vs corrupted:  {sum(baseline_reasoning_corrupt)/len(baseline_reasoning_corrupt):.3f}")
+            print(f"  Ablation reasoning vs clean:      {sum(ablation_reasoning_clean)/len(ablation_reasoning_clean):.3f}")
+            print(f"  Ablation reasoning vs corrupted:  {sum(ablation_reasoning_corrupt)/len(ablation_reasoning_corrupt):.3f}")
+
+            # Count preferences
+            content_prefers_clean = sum(1 for r in results if r.get('ablation_content_vs_clean', 0) > r.get('ablation_content_vs_corrupted', 0))
+            content_prefers_corrupt = sum(1 for r in results if r.get('ablation_content_vs_clean', 0) < r.get('ablation_content_vs_corrupted', 0))
+            reasoning_prefers_clean = sum(1 for r in results if r.get('ablation_reasoning_vs_clean', 0) > r.get('ablation_reasoning_vs_corrupted', 0))
+            reasoning_prefers_corrupt = sum(1 for r in results if r.get('ablation_reasoning_vs_clean', 0) < r.get('ablation_reasoning_vs_corrupted', 0))
+
+            print(f"\nPreference Counts:")
+            print(f"  Ablation CONTENT prefers clean:      {content_prefers_clean}/{len(results)} ({100*content_prefers_clean/len(results):.1f}%)")
+            print(f"  Ablation CONTENT prefers corrupted:  {content_prefers_corrupt}/{len(results)} ({100*content_prefers_corrupt/len(results):.1f}%)")
+            print(f"  Ablation REASONING prefers clean:      {reasoning_prefers_clean}/{len(results)} ({100*reasoning_prefers_clean/len(results):.1f}%)")
+            print(f"  Ablation REASONING prefers corrupted:  {reasoning_prefers_corrupt}/{len(results)} ({100*reasoning_prefers_corrupt/len(results):.1f}%)")
 
     # Interpretation
     print("\n" + "="*80)
     print("Interpretation")
     print("="*80)
 
-    # Use semantic behavior if available, otherwise use indicator-based
-    if args.use_semantic and semantic_behaviors:
-        primary_counts = semantic_counts
-        method = "semantic similarity"
-    else:
-        primary_counts = behavior_counts
-        method = "indicator matching"
+    if args.use_semantic and baseline_clean_sims:
+        avg_ablation_clean = sum(ablation_clean_sims) / len(ablation_clean_sims)
+        avg_ablation_corrupt = sum(ablation_corrupt_sims) / len(ablation_corrupt_sims)
+        avg_reasoning_clean = sum(ablation_reasoning_clean) / len(ablation_reasoning_clean)
+        avg_reasoning_corrupt = sum(ablation_reasoning_corrupt) / len(ablation_reasoning_corrupt)
 
-    print(f"\nPrimary analysis method: {method}")
+        print(f"\nKey findings:")
 
-    if primary_counts['FOLLOWS_OUTLINE'] > primary_counts['FOLLOWS_PLAN']:
-        print("\n✓ Model primarily FOLLOWS OUTLINE (direct copy)")
-        print("  → Constraint transfer is Outline → Story (bypasses Plan)")
-    elif primary_counts['FOLLOWS_PLAN'] > primary_counts['FOLLOWS_OUTLINE']:
-        print("\n✓ Model primarily FOLLOWS PLAN (CoT mediation)")
-        print("  → Constraint transfer is Outline → Plan → Story")
-    elif primary_counts['USES_BOTH'] > len(results) / 2:
-        print("\n⚠ Model uses BOTH twists (conflict resolution)")
-        print("  → May indicate both Plan and Outline influence generation")
+        if content_prefers_clean > content_prefers_corrupt * 1.5:
+            print(f"  ✓ Ablation content prefers CLEAN twist ({100*content_prefers_clean/len(results):.0f}%)")
+            print(f"    → Reasoning successfully filters corrupted outline")
+            print(f"    → Evidence for CoT mediation: Outline → Reasoning → Content")
+        elif content_prefers_corrupt > content_prefers_clean * 1.5:
+            print(f"  ✓ Ablation content prefers CORRUPTED twist ({100*content_prefers_corrupt/len(results):.0f}%)")
+            print(f"    → Corrupted outline leaks directly into content")
+            print(f"    → Evidence for direct path: Outline → Content (bypasses reasoning)")
+        else:
+            print(f"  ⚠ Mixed results: Content shows no clear preference")
+
+        if reasoning_prefers_clean > reasoning_prefers_corrupt * 1.5:
+            print(f"\n  ✓ Ablation reasoning focuses on CLEAN twist ({100*reasoning_prefers_clean/len(results):.0f}%)")
+            print(f"    → Reasoning ignores corrupted outline, uses original plan")
+        elif reasoning_prefers_corrupt > reasoning_prefers_clean * 1.5:
+            print(f"\n  ✓ Ablation reasoning focuses on CORRUPTED twist ({100*reasoning_prefers_corrupt/len(results):.0f}%)")
+            print(f"    → Reasoning adapts to corrupted outline")
     else:
-        print("\n⚠ Results MIXED or model uses NEITHER twist")
-        print("  → Need more investigation or twists not literally present")
+        print(f"\n⚠ No semantic analysis performed. Use --use-semantic for detailed analysis.")
 
     # Save results
     output_file = Path("twist/mechanistic_interp/outputs/story_analysis_results.json")
