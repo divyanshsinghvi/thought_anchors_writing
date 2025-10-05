@@ -176,6 +176,9 @@ PRESENCE_PROMPT_TEMPLATE = (
     "JSON:"
 )
 
+PRESENCE_PARSE_WARNING_LIMIT = 5
+PRESENCE_PARSE_WARNING_COUNT = 0
+
 
 def build_presence_prompt(text: str, clean_twist: str, corrupted_twist: str) -> Optional[str]:
     """Construct the instruction prompt for twist presence checking."""
@@ -193,12 +196,19 @@ def build_presence_prompt(text: str, clean_twist: str, corrupted_twist: str) -> 
 def parse_presence_result(raw_output: str, threshold: float = 0.5) -> Dict[str, Dict[str, Optional[float]]]:
     """Parse raw LLM output into presence scores."""
 
+    global PRESENCE_PARSE_WARNING_COUNT
+
     default_presence = empty_presence()
     if not raw_output:
         return default_presence
 
     presence = _extract_presence_from_text(raw_output)
     if not presence:
+        snippet = raw_output.strip().replace('\n', ' ')[:160]
+        if snippet:
+            if PRESENCE_PARSE_WARNING_COUNT < PRESENCE_PARSE_WARNING_LIMIT:
+                print(f"  ⚠ Presence parser: could not find JSON in output: '{snippet}...' ")
+            PRESENCE_PARSE_WARNING_COUNT += 1
         return default_presence
 
     for key in ['clean', 'corrupted']:
@@ -308,7 +318,9 @@ def analyze_single_ablation(
     ablation_data: Dict,
     semantic_model,
     presence_classifier=None,
-    presence_threshold: float = 0.5
+    presence_threshold: float = 0.5,
+    presence_model_name: Optional[str] = None,
+    semantic_model_name: Optional[str] = None
 ) -> Dict:
     """Compute 8 semantic similarities for one ablation pair."""
 
@@ -360,6 +372,7 @@ def analyze_single_ablation(
         'ablation_content_vs_corrupted': ablation_content_vs_corrupted,
         'baseline_reasoning_vs_clean': baseline_reasoning_vs_clean,
         'baseline_reasoning_vs_corrupted': baseline_reasoning_vs_corrupted,
+        'semantic_model': semantic_model_name,
     }
 
     # Determine content preference
@@ -378,7 +391,6 @@ def analyze_single_ablation(
         result['reasoning_prefers'] = 'clean' if ablation_reasoning_vs_clean > ablation_reasoning_vs_corrupted else 'corrupted'
     else:
         result['ablation_reasoning_vs_clean'] = None
-        result['ablation_reasoning_vs_corrupted'] = None
         result['reasoning_prefers'] = None
 
     default_presence = empty_presence()
@@ -386,6 +398,8 @@ def analyze_single_ablation(
     result['ablation_presence'] = deepcopy(default_presence)
     result['baseline_reasoning_presence'] = deepcopy(default_presence)
     result['ablation_reasoning_presence'] = deepcopy(default_presence)
+    result['presence_source'] = None
+    result['presence_model'] = None
 
     if presence_classifier is not None:
         presence_prompts = {
@@ -395,6 +409,8 @@ def analyze_single_ablation(
             'ablation_reasoning_presence': build_presence_prompt(ablation_reasoning if analyze_reasoning else None, clean_twist, corrupted_twist),
         }
         result['_presence_prompts'] = presence_prompts
+        result['presence_source'] = 'llm'
+        result['presence_model'] = presence_model_name
 
     return result
 
@@ -406,7 +422,9 @@ def analyze_baseline_think_mode(
     stories_dir: Path,
     ablation_dir: Path,
     presence_classifier=None,
-    presence_threshold: float = 0.5
+    presence_threshold: float = 0.5,
+    semantic_model_name: Optional[str] = None,
+    presence_model_name: Optional[str] = None
 ) -> Dict:
     """Analyze all ablations for one baseline × think_mode combination."""
 
@@ -443,7 +461,9 @@ def analyze_baseline_think_mode(
             ablation_data,
             semantic_model,
             presence_classifier=presence_classifier,
-            presence_threshold=presence_threshold
+            presence_threshold=presence_threshold,
+            presence_model_name=presence_model_name,
+            semantic_model_name=semantic_model_name
         )
         ablations.append(result)
 
@@ -482,6 +502,7 @@ def analyze_baseline_think_mode(
             'avg_ablation_content_vs_corrupted': sum(a['ablation_content_vs_corrupted'] for a in ablations) / len(ablations),
             'avg_baseline_reasoning_vs_clean': sum(a['baseline_reasoning_vs_clean'] for a in ablations) / len(ablations),
             'avg_baseline_reasoning_vs_corrupted': sum(a['baseline_reasoning_vs_corrupted'] for a in ablations) / len(ablations),
+            'semantic_model': semantic_model_name,
         }
 
         if think_mode == 'allow_more_thinking':
@@ -567,6 +588,9 @@ def analyze_baseline_think_mode(
             }
 
             summary['presence'] = presence_summary
+            summary['presence_model'] = presence_model_name
+            summary['presence_source'] = 'llm'
+            summary['presence_threshold'] = presence_threshold
 
         print(f"\n  Summary:")
         print(f"    Content prefers clean: {content_prefers_clean}/{len(ablations)} ({100*content_prefers_clean/len(ablations):.1f}%)")
@@ -610,12 +634,21 @@ def analyze_baseline_think_mode(
                     )
                 else:
                     print(f"      {label} – corrupted: N/A")
+
+            model_info = summary.get('presence_model')
+            if model_info:
+                print(f"      Model: {model_info} (threshold={summary.get('presence_threshold')})")
     else:
         summary = {}
 
     return {
         'baseline_id': baseline_id,
         'think_mode': think_mode,
+        'models': {
+            'semantic': semantic_model_name,
+            'presence': presence_model_name,
+            'presence_source': 'llm' if presence_classifier else None
+        },
         'ablations': ablations,
         'summary': summary
     }
@@ -705,7 +738,9 @@ def main():
                 stories_dir,
                 ablation_dir,
                 presence_classifier=presence_classifier,
-                presence_threshold=args.presence_threshold
+                presence_threshold=args.presence_threshold,
+                semantic_model_name=args.semantic_model,
+                presence_model_name=args.presence_model
             )
 
             if result:
