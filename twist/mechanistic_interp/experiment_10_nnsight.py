@@ -74,6 +74,16 @@ MATCHED_PAIRS = [
     }
 ]
 
+def get_resid_handle(t, model, layer: int, location: str):
+    """Return traced handle for residual location: pre_attn, post_attn, post_mlp."""
+    if location == "pre_attn":
+        return t(model.model.layers[layer].self_attn).inputs[0]
+    if location == "post_attn":
+        return t(model.model.layers[layer].mlp).inputs[0]
+    if location == "post_mlp":
+        return t(model.model.layers[layer]).output
+    raise ValueError("location must be one of: pre_attn, post_attn, post_mlp")
+
 
 def load_prompts(baseline_id: str, target_id: str, think_mode: str) -> str:
     """Load the ablated prompt."""
@@ -101,9 +111,9 @@ def compute_keyword_probability(
     with model.trace(inputs):
         logits_out = model.output.save()
 
-    # Get probabilities at last position
-    logits = logits_out.logits
-    probs = torch.softmax(logits[0, -1, :], dim=0).cpu()
+    # Get probabilities at last position - move to CPU immediately
+    logits = logits_out.logits.cpu()
+    probs = torch.softmax(logits[0, -1, :], dim=0)
 
     # Check keyword probabilities
     keyword_probs = []
@@ -115,7 +125,14 @@ def compute_keyword_probability(
             prob_val = probs[first_token]
             keyword_probs.append(prob_val.item())
 
-    return np.mean(keyword_probs) if keyword_probs else 0.0
+    result = np.mean(keyword_probs) if keyword_probs else 0.0
+
+    # Free memory
+    del logits, probs, logits_out, inputs
+    if DEVICE == 'cuda':
+        torch.cuda.empty_cache()
+
+    return result
 
 
 def patch_layer_nnsight(
@@ -125,7 +142,8 @@ def patch_layer_nnsight(
     target_prompt: str,
     layer: int,
     clean_keywords: List[str],
-    corrupted_keywords: List[str]
+    corrupted_keywords: List[str],
+    location: str = "post_attn"
 ) -> Dict:
     """Layer-level patch using NNsight with proper tracing and length alignment."""
 
@@ -137,22 +155,23 @@ def patch_layer_nnsight(
     source_inputs = tokenizer(source_prompt, return_tensors="pt").to(DEVICE)
     target_inputs = tokenizer(target_prompt, return_tensors="pt").to(DEVICE)
 
-    # Capture source layer output
-    with model.trace(source_inputs):
-        src_o_proj = model.model.layers[layer].self_attn.o_proj.output.save()
-    source_activation = src_o_proj
+    # Capture source residual at chosen location
+    with model.trace(source_inputs) as t_src:
+        src_handle = get_resid_handle(t_src, model, layer, location).save()
+    source_activation = src_handle.value.cpu()  # Move to CPU immediately
 
-    # Patch into target with alignment (schedule overwrite BEFORE forward)
-    with model.trace(target_inputs):
-        tgt_o_proj = model.model.layers[layer].self_attn.o_proj.output
+    # Patch into target with alignment
+    with model.trace(target_inputs) as t_tgt:
+        tgt_handle = get_resid_handle(t_tgt, model, layer, location)
         tgt_len = int(target_inputs["input_ids"].shape[1])
         min_len = min(source_activation.shape[1], tgt_len)
-        tgt_o_proj[:, :min_len, :] = source_activation[:, :min_len, :]
-        traced_out = model.output.save()
+        # Move source back to device for patching
+        tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :].to(DEVICE)
+        traced_out = t_tgt(model).output.save()
 
-    # Compute patched probabilities (clean + corrupted) from traced logits
-    logits = traced_out.logits  # [1, seq, vocab]
-    probs = torch.softmax(logits[0, -1, :], dim=0).to('cpu')
+    # Compute patched probabilities - move to CPU immediately
+    logits = traced_out.value.logits.cpu()
+    probs = torch.softmax(logits[0, -1, :], dim=0)
 
     def avg_first_token_prob(words: List[str]) -> float:
         ids = []
@@ -169,7 +188,7 @@ def patch_layer_nnsight(
     patched_clean = avg_first_token_prob(clean_keywords)
     patched_corr = avg_first_token_prob(corrupted_keywords)
 
-    return {
+    result = {
         'layer': layer,
         'baseline_clean_prob': float(baseline_clean),
         'baseline_corrupted_prob': float(baseline_corr),
@@ -182,6 +201,13 @@ def patch_layer_nnsight(
         'delta_corr_minus_clean': float((patched_corr - patched_clean) - (baseline_corr - baseline_clean)),
     }
 
+    # Free memory
+    del source_activation, logits, probs, traced_out, source_inputs, target_inputs
+    if DEVICE == 'cuda':
+        torch.cuda.empty_cache()
+
+    return result
+
 
 def scan_layer_nnsight(
     model: LanguageModel,
@@ -191,15 +217,22 @@ def scan_layer_nnsight(
     layer: int,
     clean_keywords: List[str],
     corrupted_keywords: List[str],
-    cache_file: Path
+    cache_file: Path,
+    location: str = "post_attn",
+    refresh_cache: bool = False
 ) -> List[Dict]:
     """Scan all heads in a layer with caching."""
 
-    # Check cache
-    if cache_file.exists():
-        with open(cache_file, 'r') as f:
-            cached = json.load(f)
-        return cached['results']
+    # Check cache (skip if refresh requested or cache is empty)
+    if cache_file.exists() and not refresh_cache:
+        try:
+            with open(cache_file, 'r') as f:
+                cached = json.load(f)
+            cached_results = cached.get('results', [])
+            if cached_results:
+                return cached_results
+        except Exception:
+            pass
 
     # For now, we scan entire layer as one unit
     # (NNsight head-level patching requires knowing model architecture)
@@ -209,7 +242,8 @@ def scan_layer_nnsight(
 
     # Layer-level patching first (head-level requires arch-specific hooks)
     result = patch_layer_nnsight(
-        model, tokenizer, source_prompt, target_prompt, layer, clean_keywords, corrupted_keywords
+        model, tokenizer, source_prompt, target_prompt, layer,
+        clean_keywords, corrupted_keywords, location
     )
     result['head'] = 'all'  # Mark as layer-level
     results.append(result)
@@ -229,6 +263,11 @@ def main():
                        help='Any HuggingFace model (e.g., Qwen/Qwen2.5-14B, Qwen/Qwen2.5-7B)')
     parser.add_argument('--refresh-cache', action='store_true',
                        help='Clear cache before running')
+    parser.add_argument('--location', type=str, default='post_attn',
+                       choices=['pre_attn','post_attn','post_mlp'],
+                       help='Residual location to patch')
+    parser.add_argument('--layer', type=int, default=None,
+                       help='If set, only patch this layer (0-index). Otherwise scan all layers')
     args = parser.parse_args()
 
     config = MATCHED_PAIRS[args.pair - 1]
@@ -238,6 +277,7 @@ def main():
     print("=" * 80)
     print(f"\nModel: {args.model}")
     print(f"Pair: {config['baseline_id']} → {config['target_id']}")
+    print(f"Location: {args.location}")
 
     # Setup
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -289,12 +329,22 @@ def main():
     # Corrupted keywords: default to using the corrupted twist phrase's first token
     corrupted_keywords = [config['corrupted_twist']]
 
-    for layer in tqdm(range(n_layers), desc="Layers"):
-        cache_file = CACHE_DIR / f"pair{args.pair}_layer{layer:02d}.json"
+    # Determine which layers to run
+    if args.layer is not None:
+        if args.layer < 0 or args.layer >= n_layers:
+            print(f"Requested layer {args.layer} out of range [0,{n_layers-1}] — exiting")
+            return
+        layer_iter = [args.layer]
+    else:
+        layer_iter = list(range(n_layers))
+
+    for layer in tqdm(layer_iter, desc="Layers"):
+        cache_file = CACHE_DIR / f"pair{args.pair}_{args.location}_layer{layer:02d}.json"
 
         layer_results = scan_layer_nnsight(
             model, tokenizer, source_prompt, target_prompt,
-            layer, config['clean_keywords'], corrupted_keywords, cache_file
+            layer, config['clean_keywords'], corrupted_keywords,
+            cache_file, location=args.location, refresh_cache=args.refresh_cache
         )
 
         all_results.extend(layer_results)
@@ -309,6 +359,7 @@ def main():
             'pair_config': config,
             'model': args.model,
             'total_layers': n_layers,
+            'location': args.location,
             'results': all_results_sorted,
             'top_10': all_results_sorted[:10]
         }, f, indent=2)
@@ -322,16 +373,19 @@ def main():
     print(f"{'Layer':<8} {'bClean':<10} {'pClean':<10} {'Δclean':<9} {'b( corr-clean )':<18} {'p( corr-clean )':<18} {'Δdiff':<10}")
     print("-" * 80)
 
-    for result in all_results_sorted[:10]:
-        print(
-            f"{result['layer']:<8} "
-            f"{result.get('baseline_clean_prob', 0.0):<10.6f} "
-            f"{result.get('patched_clean_prob', 0.0):<10.6f} "
-            f"{result.get('delta_clean', 0.0):+9.6f} "
-            f"{result.get('baseline_corr_minus_clean', 0.0):<18.6f} "
-            f"{result.get('patched_corr_minus_clean', 0.0):<18.6f} "
-            f"{result.get('delta_corr_minus_clean', 0.0):+10.6f}"
-        )
+    if not all_results_sorted:
+        print("(no results — try --refresh-cache or check keywords)")
+    else:
+        for result in all_results_sorted[:10]:
+            print(
+                f"{result['layer']:<8} "
+                f"{result.get('baseline_clean_prob', 0.0):<10.6f} "
+                f"{result.get('patched_clean_prob', 0.0):<10.6f} "
+                f"{result.get('delta_clean', 0.0):+9.6f} "
+                f"{result.get('baseline_corr_minus_clean', 0.0):<18.6f} "
+                f"{result.get('patched_corr_minus_clean', 0.0):<18.6f} "
+                f"{result.get('delta_corr_minus_clean', 0.0):+10.6f}"
+            )
 
 
 if __name__ == "__main__":
