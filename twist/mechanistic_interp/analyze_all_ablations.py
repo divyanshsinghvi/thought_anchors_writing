@@ -222,39 +222,57 @@ def parse_presence_result(raw_output: str, threshold: float = 0.5) -> Dict[str, 
     return presence
 
 
-def run_presence_batch(generator, prompts: List[str], threshold: float = 0.5) -> List[Dict[str, Dict[str, Optional[float]]]]:
+def run_presence_batch(
+    generator,
+    prompts: List[str],
+    threshold: float = 0.5,
+    batch_size: int = 4,
+    max_new_tokens: int = 120
+) -> List[Dict[str, Dict[str, Optional[float]]]]:
     """Run presence model on a batch of prompts."""
 
     if generator is None or not prompts:
         return [empty_presence() for _ in prompts]
 
-    try:
-        outputs = generator(
-            prompts,
-            max_new_tokens=2000,
-            do_sample=False,
-            return_full_text=False
-        )
-    except Exception as exc:
-        print(f"  ⚠ Presence generation failed: {exc}")
-        return [empty_presence() for _ in prompts]
+    if batch_size <= 0:
+        batch_size = 4
 
-    results = []
-    for output in outputs:
-        raw_output = output
-        if isinstance(output, list):
-            raw_output = output[0] if output else {}
-        if isinstance(raw_output, dict):
-            raw_output = raw_output.get('generated_text') or raw_output.get('text') or ''
-        if isinstance(raw_output, list):
-            raw_output = raw_output[0] if raw_output else ''
-        results.append(parse_presence_result(raw_output, threshold))
+    results: List[Dict[str, Dict[str, Optional[float]]]] = []
 
-    # In case pipeline returns fewer outputs than prompts, pad with defaults
+    for start in range(0, len(prompts), batch_size):
+        chunk = prompts[start:start + batch_size]
+        try:
+            outputs = generator(
+                chunk,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                return_full_text=False
+            )
+        except TypeError:
+            outputs = generator(
+                chunk,
+                max_new_tokens=max_new_tokens,
+                do_sample=False
+            )
+        except Exception as exc:
+            print(f"  ⚠ Presence generation failed for batch starting at {start}: {exc}")
+            results.extend([empty_presence() for _ in chunk])
+            continue
+
+        for output in outputs:
+            raw_output = output
+            if isinstance(output, list):
+                raw_output = output[0] if output else {}
+            if isinstance(raw_output, dict):
+                raw_output = raw_output.get('generated_text') or raw_output.get('text') or ''
+            if isinstance(raw_output, list):
+                raw_output = raw_output[0] if raw_output else ''
+            results.append(parse_presence_result(raw_output, threshold))
+
     while len(results) < len(prompts):
         results.append(empty_presence())
 
-    return results
+    return results[:len(prompts)]
 
 
 def compute_semantic_similarity(text1, text2, model) -> float:
@@ -420,7 +438,9 @@ def analyze_baseline_think_mode(
     presence_classifier=None,
     presence_threshold: float = 0.5,
     semantic_model_name: Optional[str] = None,
-    presence_model_name: Optional[str] = None
+    presence_model_name: Optional[str] = None,
+    presence_batch_size: int = 4,
+    presence_max_new_tokens: int = 120
 ) -> Dict:
     """Analyze all ablations for one baseline × think_mode combination."""
 
@@ -483,7 +503,13 @@ def analyze_baseline_think_mode(
                     index_map.append((result, field))
 
         if prompts:
-            presence_results = run_presence_batch(presence_classifier, prompts, threshold=presence_threshold)
+            presence_results = run_presence_batch(
+                presence_classifier,
+                prompts,
+                threshold=presence_threshold,
+                batch_size=presence_batch_size,
+                max_new_tokens=presence_max_new_tokens
+            )
             for (result, field), presence in zip(index_map, presence_results):
                 result[field] = presence
 
@@ -616,6 +642,8 @@ def analyze_baseline_think_mode(
             summary['presence_model'] = presence_model_name
             summary['presence_source'] = 'llm'
             summary['presence_threshold'] = presence_threshold
+            summary['presence_batch_size'] = presence_batch_size
+            summary['presence_max_new_tokens'] = presence_max_new_tokens
             summary['presence_parse_warnings'] = max(presence_warning_delta, 0)
 
         print(f"\n  Summary:")
@@ -673,7 +701,13 @@ def analyze_baseline_think_mode(
 
             model_info = summary.get('presence_model')
             if model_info:
-                print(f"      Model: {model_info} (threshold={summary.get('presence_threshold')})")
+                print(
+                    "      Model: "
+                    f"{model_info} "
+                    f"(threshold={summary.get('presence_threshold')}, "
+                    f"batch={summary.get('presence_batch_size')}, "
+                    f"max_new_tokens={summary.get('presence_max_new_tokens')})"
+                )
             warning_count = summary.get('presence_parse_warnings')
             if warning_count:
                 print(f"      Parse warnings (this batch): {warning_count}")
@@ -686,7 +720,9 @@ def analyze_baseline_think_mode(
         'models': {
             'semantic': semantic_model_name,
             'presence': presence_model_name,
-            'presence_source': 'llm' if presence_classifier else None
+            'presence_source': 'llm' if presence_classifier else None,
+            'presence_batch_size': presence_batch_size if presence_classifier else None,
+            'presence_max_new_tokens': presence_max_new_tokens if presence_classifier else None
         },
         'ablations': ablations,
         'summary': summary
@@ -729,6 +765,18 @@ def main():
         help='Confidence threshold for marking twist presence'
     )
     parser.add_argument(
+        '--presence-batch-size',
+        type=int,
+        default=4,
+        help='Batch size for presence model generation (default: 4)'
+    )
+    parser.add_argument(
+        '--presence-max-new-tokens',
+        type=int,
+        default=120,
+        help='Max new tokens for presence model outputs (default: 120)'
+    )
+    parser.add_argument(
         '--output-dir',
         type=Path,
         default=Path('twist/mechanistic_interp/outputs/batch_analysis'),
@@ -748,6 +796,8 @@ def main():
     if args.presence_model:
         print(f"  Presence model: {args.presence_model}")
         print(f"  Presence threshold: {args.presence_threshold}")
+        print(f"  Presence batch size: {args.presence_batch_size}")
+        print(f"  Presence max new tokens: {args.presence_max_new_tokens}")
 
     # Load semantic model
     print(f"\nLoading semantic model...")
@@ -782,7 +832,9 @@ def main():
                 presence_classifier=presence_classifier,
                 presence_threshold=args.presence_threshold,
                 semantic_model_name=args.semantic_model,
-                presence_model_name=args.presence_model
+                presence_model_name=args.presence_model,
+                presence_batch_size=args.presence_batch_size,
+                presence_max_new_tokens=args.presence_max_new_tokens
             )
 
             if result:
