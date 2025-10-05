@@ -102,7 +102,8 @@ def compute_keyword_probability(
         logits = outputs.logits
 
     # Get probabilities at last position
-    probs = torch.softmax(logits[0, -1, :], dim=0)
+    # Ensure tensor is on CPU and materialized before calling .item()
+    probs = torch.softmax(logits[0, -1, :], dim=0).cpu()
 
     # Check keyword probabilities
     keyword_probs = []
@@ -111,7 +112,10 @@ def compute_keyword_probability(
         keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
         if len(keyword_tokens) > 0:
             first_token = keyword_tokens[0]
-            keyword_probs.append(probs[first_token].item())
+            # Ensure we have actual tensor before .item()
+            prob_val = probs[first_token]
+            if prob_val.device.type != 'meta':
+                keyword_probs.append(prob_val.item())
 
     return np.mean(keyword_probs) if keyword_probs else 0.0
 
@@ -157,13 +161,16 @@ def patch_single_head_nnsight(
         patched_logits = model.lm_head.output.save()
 
     # Compute patched probability
-    probs = torch.softmax(patched_logits.value[0, -1, :], dim=0)
+    # Ensure tensor is materialized on CPU before .item()
+    probs = torch.softmax(patched_logits.value[0, -1, :], dim=0).cpu()
 
     keyword_probs = []
     for keyword in clean_keywords:
         keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
         if len(keyword_tokens) > 0:
-            keyword_probs.append(probs[keyword_tokens[0]].item())
+            prob_val = probs[keyword_tokens[0]]
+            if prob_val.device.type != 'meta':
+                keyword_probs.append(prob_val.item())
 
     patched_prob = np.mean(keyword_probs) if keyword_probs else 0.0
 
@@ -258,7 +265,12 @@ def main():
     print(f"\nLoading model with NNsight: {args.model}")
     print("This may take a few minutes...")
 
-    model = LanguageModel(args.model, device_map='auto', torch_dtype=torch.float16)
+    # Load model on specific device (not 'auto' to avoid meta tensors)
+    model = LanguageModel(
+        args.model,
+        device_map=DEVICE,  # Use specific device, not 'auto'
+        torch_dtype=torch.float16 if DEVICE == 'cuda' else torch.float32
+    )
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     print(f"✓ Model loaded")
