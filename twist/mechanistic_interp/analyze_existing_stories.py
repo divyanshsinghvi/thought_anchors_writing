@@ -28,6 +28,55 @@ except ImportError:
     SEMANTIC_AVAILABLE = False
     print("⚠ Warning: sentence-transformers not installed. Semantic matching unavailable.")
 
+# Try to import transformers for Qwen embeddings
+try:
+    from transformers import AutoTokenizer, AutoModel
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    print("⚠ Warning: transformers not installed. Qwen embeddings unavailable.")
+
+
+class QwenEmbeddings:
+    """Wrapper to use Qwen model for embeddings via mean pooling."""
+
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B"):
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers not installed")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.to(self.device)
+        self.model.eval()
+
+    def encode(self, texts: List[str], convert_to_numpy: bool = True):
+        """Encode texts to embeddings using mean pooling."""
+        if isinstance(texts, str):
+            texts = [texts]
+
+        with torch.no_grad():
+            # Tokenize
+            inputs = self.tokenizer(
+                texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            ).to(self.device)
+
+            # Get model outputs
+            outputs = self.model(**inputs)
+
+            # Mean pooling over sequence length
+            embeddings = outputs.last_hidden_state.mean(dim=1)
+
+            if convert_to_numpy:
+                embeddings = embeddings.cpu().numpy()
+
+            return embeddings
+
 
 def load_ablation_data(
     baseline_id: str = "twist_001",
@@ -111,14 +160,14 @@ def split_into_sentences(text: str) -> List[str]:
 def semantic_similarity_check(
     story: str,
     twist_phrase: str,
-    model: SentenceTransformer = None
+    model = None  # Can be SentenceTransformer or QwenEmbeddings
 ) -> Dict:
     """
     Check semantic similarity between story sentences and twist phrase.
 
     Returns max similarity score and the most similar sentence.
     """
-    if not SEMANTIC_AVAILABLE or model is None:
+    if model is None:
         return {
             'max_similarity': 0.0,
             'most_similar_sentence': '',
@@ -338,13 +387,13 @@ def main():
     parser.add_argument(
         '--use-semantic',
         action='store_true',
-        help='Use semantic similarity matching (requires sentence-transformers)'
+        help='Use semantic similarity matching (requires sentence-transformers or transformers)'
     )
     parser.add_argument(
         '--semantic-model',
         type=str,
         default='all-mpnet-base-v2',
-        help='Sentence transformer model name (default: all-mpnet-base-v2)'
+        help='Model name for embeddings (default: all-mpnet-base-v2). Use "qwen" for Qwen/Qwen2.5-0.5B'
     )
 
     args = parser.parse_args()
@@ -352,13 +401,24 @@ def main():
     # Load semantic model if requested
     semantic_model = None
     if args.use_semantic:
-        if not SEMANTIC_AVAILABLE:
-            print("\n⚠ Error: sentence-transformers not installed. Install with:")
-            print("  pip install sentence-transformers")
-            return
-        print(f"\nLoading semantic model: {args.semantic_model}...")
-        semantic_model = SentenceTransformer(args.semantic_model)
-        print(f"✓ Model loaded")
+        if args.semantic_model.lower() in ['qwen', 'qwen2.5-0.5b', 'qwen/qwen2.5-0.5b']:
+            # Use Qwen for embeddings
+            if not TRANSFORMERS_AVAILABLE:
+                print("\n⚠ Error: transformers not installed. Install with:")
+                print("  pip install transformers torch")
+                return
+            print(f"\nLoading Qwen model for embeddings: Qwen/Qwen2.5-0.5B...")
+            semantic_model = QwenEmbeddings("Qwen/Qwen2.5-0.5B")
+            print(f"✓ Qwen model loaded")
+        else:
+            # Use sentence-transformers
+            if not SEMANTIC_AVAILABLE:
+                print("\n⚠ Error: sentence-transformers not installed. Install with:")
+                print("  pip install sentence-transformers")
+                return
+            print(f"\nLoading semantic model: {args.semantic_model}...")
+            semantic_model = SentenceTransformer(args.semantic_model)
+            print(f"✓ Model loaded")
 
     print("="*80)
     print("Analyzing Existing Generated Stories")
@@ -434,6 +494,7 @@ def main():
     print("Summary")
     print("="*80)
 
+    # Indicator-based behavior
     behaviors = [r['model_behavior'] for r in results]
     behavior_counts = {
         'FOLLOWS_OUTLINE': behaviors.count('FOLLOWS_OUTLINE'),
@@ -442,24 +503,59 @@ def main():
         'USES_NEITHER': behaviors.count('USES_NEITHER')
     }
 
-    print(f"\nBehavior Distribution:")
+    print(f"\nBehavior Distribution (Indicator-Based):")
     for behavior, count in behavior_counts.items():
         pct = (count / len(results)) * 100 if results else 0
         print(f"  {behavior}: {count}/{len(results)} ({pct:.1f}%)")
+
+    # Semantic-based behavior (if enabled)
+    if args.use_semantic:
+        semantic_behaviors = [r.get('semantic_behavior') for r in results if 'semantic_behavior' in r]
+        if semantic_behaviors:
+            semantic_counts = {
+                'FOLLOWS_OUTLINE': semantic_behaviors.count('FOLLOWS_OUTLINE'),
+                'FOLLOWS_PLAN': semantic_behaviors.count('FOLLOWS_PLAN'),
+                'USES_BOTH': semantic_behaviors.count('USES_BOTH'),
+                'USES_NEITHER': semantic_behaviors.count('USES_NEITHER')
+            }
+
+            print(f"\nBehavior Distribution (Semantic-Based):")
+            for behavior, count in semantic_counts.items():
+                pct = (count / len(semantic_behaviors)) * 100 if semantic_behaviors else 0
+                print(f"  {behavior}: {count}/{len(semantic_behaviors)} ({pct:.1f}%)")
+
+            # Show similarity statistics
+            outline_sims = [r.get('semantic_outline_similarity', 0.0) for r in results if 'semantic_outline_similarity' in r]
+            plan_sims = [r.get('semantic_plan_similarity', 0.0) for r in results if 'semantic_plan_similarity' in r]
+
+            if outline_sims and plan_sims:
+                print(f"\nSemantic Similarity Statistics:")
+                print(f"  Outline twist - Mean: {sum(outline_sims)/len(outline_sims):.3f}, Max: {max(outline_sims):.3f}")
+                print(f"  Plan twist    - Mean: {sum(plan_sims)/len(plan_sims):.3f}, Max: {max(plan_sims):.3f}")
 
     # Interpretation
     print("\n" + "="*80)
     print("Interpretation")
     print("="*80)
 
-    if behavior_counts['FOLLOWS_OUTLINE'] > behavior_counts['FOLLOWS_PLAN']:
+    # Use semantic behavior if available, otherwise use indicator-based
+    if args.use_semantic and semantic_behaviors:
+        primary_counts = semantic_counts
+        method = "semantic similarity"
+    else:
+        primary_counts = behavior_counts
+        method = "indicator matching"
+
+    print(f"\nPrimary analysis method: {method}")
+
+    if primary_counts['FOLLOWS_OUTLINE'] > primary_counts['FOLLOWS_PLAN']:
         print("\n✓ Model primarily FOLLOWS OUTLINE (direct copy)")
         print("  → Constraint transfer is Outline → Story (bypasses Plan)")
-    elif behavior_counts['FOLLOWS_PLAN'] > behavior_counts['FOLLOWS_OUTLINE']:
+    elif primary_counts['FOLLOWS_PLAN'] > primary_counts['FOLLOWS_OUTLINE']:
         print("\n✓ Model primarily FOLLOWS PLAN (CoT mediation)")
         print("  → Constraint transfer is Outline → Plan → Story")
-    elif behavior_counts['USES_BOTH'] > len(results) / 2:
-        print("\n⚠ Model uses BOTH twists (confused by conflict)")
+    elif primary_counts['USES_BOTH'] > len(results) / 2:
+        print("\n⚠ Model uses BOTH twists (conflict resolution)")
         print("  → May indicate both Plan and Outline influence generation")
     else:
         print("\n⚠ Results MIXED or model uses NEITHER twist")
