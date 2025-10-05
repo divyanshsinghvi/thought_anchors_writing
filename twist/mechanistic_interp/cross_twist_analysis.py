@@ -23,9 +23,9 @@ import numpy as np
 
 PRESENCE_FIELDS = {
     'baseline_presence': 'Baseline story',
-    'ablation_presence': 'Ablation story',
+    'ablation_presence': 'Replacement story',
     'baseline_reasoning_presence': 'Baseline reasoning',
-    'ablation_reasoning_presence': 'Ablation reasoning'
+    'ablation_reasoning_presence': 'Replacement reasoning'
 }
 
 PRESENCE_THINK_MODES = {
@@ -507,12 +507,12 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
             _finalize_presence_counter(field_counter)
 
     overall = {}
-    ablation_story_corrupted = presence_summary['ablation_presence']['corrupted']
-    if ablation_story_corrupted['present_total'] > 0:
-        overall['ablation_story_corrupted_present_pct'] = ablation_story_corrupted['present_pct']
-        overall['ablation_story_corrupted_present_count'] = (
-            ablation_story_corrupted['present_true'],
-            ablation_story_corrupted['present_total']
+    replacement_story_corrupted = presence_summary['ablation_presence']['corrupted']
+    if replacement_story_corrupted['present_total'] > 0:
+        overall['replacement_story_corrupted_present_pct'] = replacement_story_corrupted['present_pct']
+        overall['replacement_story_corrupted_present_count'] = (
+            replacement_story_corrupted['present_true'],
+            replacement_story_corrupted['present_total']
         )
 
     baseline_story_corrupted = presence_summary['baseline_presence']['corrupted']
@@ -785,9 +785,9 @@ def print_summary(analysis: Dict):
 
         overall = presence.get('overall', {})
         if overall:
-            leak = overall.get('ablation_story_corrupted_present_pct')
+            leak = overall.get('replacement_story_corrupted_present_pct')
             if leak is not None:
-                count = overall.get('ablation_story_corrupted_present_count')
+                count = overall.get('replacement_story_corrupted_present_count')
                 if count:
                     print(
                         f"\nAblation story corrupted presence: {leak:.1f}% ({count[0]}/{count[1]})"
@@ -810,10 +810,10 @@ def print_summary(analysis: Dict):
     print("-" * 80)
     story_corr = presence_corr.get('story', {})
     if story_corr.get('points', 0) < 2 or story_corr.get('correlation') is None:
-        print("\nStory content: not enough data for correlation.")
+        print("\nReplacement story content: not enough data for correlation.")
     else:
         modes = story_corr.get('think_modes', {}) or {}
-        print(f"\nStory content points: {story_corr['points']} (no_more_thinking={modes.get('no_more_thinking', 0)}, allow_more_thinking={modes.get('allow_more_thinking', 0)})")
+        print(f"\nReplacement story content points: {story_corr['points']} (no_more_thinking={modes.get('no_more_thinking', 0)}, allow_more_thinking={modes.get('allow_more_thinking', 0)})")
         print(f"Mean semantic diff (corrupted - clean): {story_corr['mean_semantic']:.3f}")
         print(f"Mean LLM confidence (corrupted twist): {story_corr['mean_confidence']:.3f}")
         print(f"Pearson correlation: {story_corr['correlation']:.3f}")
