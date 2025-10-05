@@ -161,70 +161,96 @@ def _extract_presence_from_text(text: str) -> Optional[Dict[str, Dict[str, Optio
         return None
 
 
-def compute_twist_presence(
-    text: str,
-    clean_twist: str,
-    corrupted_twist: str,
-    generator,
-    threshold: float = 0.5
-) -> Dict[str, Dict[str, Optional[float]]]:
-    """Query LLM to estimate twist presence via JSON response."""
+PRESENCE_PROMPT_TEMPLATE = (
+    "You are checking whether a story contains specific narrative twists.\n"
+    "Return a strict JSON object with this schema:\n"
+    "{\n"
+    "  \"clean\": {\"present\": true|false, \"confidence\": float between 0 and 1},\n"
+    "  \"corrupted\": {\"present\": true|false, \"confidence\": float between 0 and 1}\n"
+    "}.\n"
+    "Confidence should reflect your certainty that the twist is explicitly or implicitly present.\n"
+    "Clean twist: {clean_twist}\n"
+    "Corrupted twist: {corrupted_twist}\n"
+    "Story:\n"
+    "{story}\n"
+    "JSON:"
+)
+
+
+def build_presence_prompt(text: str, clean_twist: str, corrupted_twist: str) -> Optional[str]:
+    """Construct the instruction prompt for twist presence checking."""
+    text = (text or "").strip()
+    if not text or not (clean_twist or corrupted_twist):
+        return None
+
+    return PRESENCE_PROMPT_TEMPLATE.format(
+        clean_twist=clean_twist or 'N/A',
+        corrupted_twist=corrupted_twist or 'N/A',
+        story=text
+    )
+
+
+def parse_presence_result(raw_output: str, threshold: float = 0.5) -> Dict[str, Dict[str, Optional[float]]]:
+    """Parse raw LLM output into presence scores."""
 
     default_presence = empty_presence()
-
-    if generator is None:
+    if not raw_output:
         return default_presence
 
-    text = text or ""
-    if not text.strip() or not (clean_twist or corrupted_twist):
+    presence = _extract_presence_from_text(raw_output)
+    if not presence:
         return default_presence
+
+    for key in ['clean', 'corrupted']:
+        entry = presence.get(key, {})
+        present = entry.get('present')
+        confidence = entry.get('confidence')
+        if present is None and isinstance(confidence, (int, float)):
+            entry['present'] = confidence >= threshold
+        presence[key] = entry
+
+    # Ensure both keys exist
+    for key in ['clean', 'corrupted']:
+        presence.setdefault(key, {'present': None, 'confidence': None})
+        presence[key].setdefault('present', None)
+        presence[key].setdefault('confidence', None)
+
+    return presence
+
+
+def run_presence_batch(generator, prompts: List[str], threshold: float = 0.5) -> List[Dict[str, Dict[str, Optional[float]]]]:
+    """Run presence model on a batch of prompts."""
+
+    if generator is None or not prompts:
+        return [empty_presence() for _ in prompts]
 
     try:
-        prompt = (
-            "You are checking whether a story contains specific narrative twists.\n"
-            "Return a strict JSON object with this schema:\n"
-            "{\n"
-            "  \"clean\": {\"present\": true|false, \"confidence\": float between 0 and 1},\n"
-            "  \"corrupted\": {\"present\": true|false, \"confidence\": float between 0 and 1}\n"
-            "}.\n"
-            "Confidence should reflect your certainty that the twist is explicitly or implicitly present.\n"
-            f"Clean twist: {clean_twist or 'N/A'}\n"
-            f"Corrupted twist: {corrupted_twist or 'N/A'}\n"
-            "Story:\n"
-            f"{text}\n"
-            "JSON:"
-        )
-
-        generations = generator(
-            prompt,
-            max_new_tokens=200,
+        outputs = generator(
+            prompts,
+            max_new_tokens=2000,
             do_sample=False,
-            temperature=0.0
+            return_full_text=False
         )
-        if not generations:
-            return default_presence
-
-        raw_output = generations[0].get('generated_text', '')
-        if isinstance(raw_output, list) and raw_output:
-            raw_output = raw_output[0]
-
-        presence = _extract_presence_from_text(raw_output)
-        if not presence:
-            return default_presence
-
-        for key in ['clean', 'corrupted']:
-            entry = presence.get(key, {})
-            present = entry.get('present')
-            confidence = entry.get('confidence')
-            if present is None and isinstance(confidence, (int, float)):
-                entry['present'] = confidence >= threshold
-            presence[key] = entry
-
-        return presence
     except Exception as exc:
-        print(f"  ⚠ Presence classification failed: {exc}")
-        return default_presence
-    return default_presence
+        print(f"  ⚠ Presence generation failed: {exc}")
+        return [empty_presence() for _ in prompts]
+
+    results = []
+    for output in outputs:
+        raw_output = output
+        if isinstance(output, list):
+            raw_output = output[0] if output else {}
+        if isinstance(raw_output, dict):
+            raw_output = raw_output.get('generated_text') or raw_output.get('text') or ''
+        if isinstance(raw_output, list):
+            raw_output = raw_output[0] if raw_output else ''
+        results.append(parse_presence_result(raw_output, threshold))
+
+    # In case pipeline returns fewer outputs than prompts, pad with defaults
+    while len(results) < len(prompts):
+        results.append(empty_presence())
+
+    return results
 
 
 def compute_semantic_similarity(text1, text2, model) -> float:
@@ -355,49 +381,20 @@ def analyze_single_ablation(
         result['ablation_reasoning_vs_corrupted'] = None
         result['reasoning_prefers'] = None
 
-    if presence_classifier is not None:
-        baseline_presence = compute_twist_presence(
-            baseline_story,
-            clean_twist,
-            corrupted_twist,
-            presence_classifier,
-            presence_threshold
-        )
-        ablation_presence = compute_twist_presence(
-            ablation_story,
-            clean_twist,
-            corrupted_twist,
-            presence_classifier,
-            presence_threshold
-        )
-        baseline_reasoning_presence = compute_twist_presence(
-            baseline_reasoning,
-            clean_twist,
-            corrupted_twist,
-            presence_classifier,
-            presence_threshold
-        )
-        if analyze_reasoning and ablation_reasoning is not None:
-            ablation_reasoning_presence = compute_twist_presence(
-                ablation_reasoning,
-                clean_twist,
-                corrupted_twist,
-                presence_classifier,
-                presence_threshold
-            )
-        else:
-            ablation_reasoning_presence = empty_presence()
+    default_presence = empty_presence()
+    result['baseline_presence'] = deepcopy(default_presence)
+    result['ablation_presence'] = deepcopy(default_presence)
+    result['baseline_reasoning_presence'] = deepcopy(default_presence)
+    result['ablation_reasoning_presence'] = deepcopy(default_presence)
 
-        result['baseline_presence'] = baseline_presence
-        result['ablation_presence'] = ablation_presence
-        result['baseline_reasoning_presence'] = baseline_reasoning_presence
-        result['ablation_reasoning_presence'] = ablation_reasoning_presence
-    else:
-        default_presence = empty_presence()
-        result['baseline_presence'] = deepcopy(default_presence)
-        result['ablation_presence'] = deepcopy(default_presence)
-        result['baseline_reasoning_presence'] = deepcopy(default_presence)
-        result['ablation_reasoning_presence'] = deepcopy(default_presence)
+    if presence_classifier is not None:
+        presence_prompts = {
+            'baseline_presence': build_presence_prompt(baseline_story, clean_twist, corrupted_twist),
+            'ablation_presence': build_presence_prompt(ablation_story, clean_twist, corrupted_twist),
+            'baseline_reasoning_presence': build_presence_prompt(baseline_reasoning, clean_twist, corrupted_twist),
+            'ablation_reasoning_presence': build_presence_prompt(ablation_reasoning if analyze_reasoning else None, clean_twist, corrupted_twist),
+        }
+        result['_presence_prompts'] = presence_prompts
 
     return result
 
@@ -452,6 +449,23 @@ def analyze_baseline_think_mode(
 
         reasoning_str = result['reasoning_prefers'] if result['reasoning_prefers'] is not None else 'skipped'
         print(f"  ✓ {target_id}: content={result['content_prefers']}, reasoning={reasoning_str}")
+
+    # Run presence model in batch (if available)
+    if presence_classifier is not None and ablations:
+        prompts = []
+        index_map = []
+
+        for result in ablations:
+            prompts_map = result.pop('_presence_prompts', {}) if '_presence_prompts' in result else {}
+            for field, prompt in prompts_map.items():
+                if prompt:
+                    prompts.append(prompt)
+                    index_map.append((result, field))
+
+        if prompts:
+            presence_results = run_presence_batch(presence_classifier, prompts, threshold=presence_threshold)
+            for (result, field), presence in zip(index_map, presence_results):
+                result[field] = presence
 
     # Compute summary statistics
     if ablations:
