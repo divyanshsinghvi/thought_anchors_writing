@@ -160,15 +160,16 @@ def main():
 
     # Default values if not provided (for testing)
     names = args.names if args.names else [
-        "Alice", "Marcus", "Dr. Chen", "Luna", "The Traveler"
+        "Alice", 
+        # "Marcus", "Dr. Chen", "Luna", "The Traveler"
     ]
 
     goals = args.goals if args.goals else [
         "find the truth",
-        "save their family",
-        "complete the mission",
-        "escape the maze",
-        "discover their identity"
+        # "save their family",
+        # "complete the mission",
+        # "escape the maze",
+        # "discover their identity"
     ]
 
     twists = args.twists if args.twists else [

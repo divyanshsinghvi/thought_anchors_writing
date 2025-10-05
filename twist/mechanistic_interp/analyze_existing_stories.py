@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""
+Analyze Existing Generated Stories for Twist Realization
+
+The ablation data already has generated stories in rollout_data['content'].
+This script analyzes those stories to see which twist the model used.
+
+Key Question: When Outline says X but Plan talks about Y, which does the model follow?
+"""
+
+import json
+import sys
+from pathlib import Path
+from typing import Dict, List
+
+# Add parent directories to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from twist.config import OUTPUT_DIR_BASE_PATH
+
+
+def load_ablation_data(
+    baseline_id: str = "twist_001",
+    ablation_dir: Path = OUTPUT_DIR_BASE_PATH / "ablation_outputs"
+) -> dict:
+    """Load baseline and ablation data."""
+    baseline_file = OUTPUT_DIR_BASE_PATH / "stories" / f"{baseline_id}.json"
+    with open(baseline_file, 'r') as f:
+        baseline_data = json.load(f)
+
+    ablation_data = {}
+    for twist_dir in sorted(ablation_dir.glob("twist_*")):
+        twist_id = twist_dir.name
+        if twist_id == baseline_id:
+            continue
+
+        rollout_file = twist_dir / "no_more_thinking" / "rollout_000.json"
+        if rollout_file.exists():
+            with open(rollout_file, 'r') as f:
+                ablation_data[twist_id] = json.load(f)
+
+    return {'baseline': baseline_data, 'ablations': ablation_data}
+
+
+def check_twist_in_story(story: str, twist_phrase: str) -> Dict:
+    """
+    Check if twist appears in story (literal or narrative indicators).
+
+    Twist indicators:
+    - "it was only a dream": woke, waking, dream, dreaming, nightmare
+    - "they were dead all along": dead, death, ghost, spirit, afterlife, corpse
+    - "villain was their future self": future, time, older, paradox
+    - "world is a simulation": simulation, program, code, matrix, virtual, glitch
+    - "last human alive": alone, last, empty, desolate, abandoned
+    """
+    story_lower = story.lower()
+    twist_lower = twist_phrase.lower()
+
+    # Literal match
+    twist_realized_literal = twist_lower in story_lower
+
+    # Narrative indicators for each twist type
+    indicators_found = []
+
+    if "dream" in twist_lower:
+        dream_indicators = ['woke', 'waking', 'dream', 'dreaming', 'nightmare', 'asleep', 'sleeping']
+        indicators_found = [ind for ind in dream_indicators if ind in story_lower]
+
+    elif "dead" in twist_lower:
+        death_indicators = ['dead', 'death', 'ghost', 'spirit', 'afterlife', 'corpse', 'died', 'lifeless']
+        indicators_found = [ind for ind in death_indicators if ind in story_lower]
+
+    elif "future self" in twist_lower or "villain" in twist_lower:
+        time_indicators = ['future', 'time', 'older', 'paradox', 'past', 'years']
+        indicators_found = [ind for ind in time_indicators if ind in story_lower]
+
+    elif "simulation" in twist_lower:
+        sim_indicators = ['simulation', 'program', 'code', 'matrix', 'virtual', 'glitch', 'pixel']
+        indicators_found = [ind for ind in sim_indicators if ind in story_lower]
+
+    elif "last human" in twist_lower or "alone" in twist_lower:
+        alone_indicators = ['alone', 'last', 'empty', 'desolate', 'abandoned', 'solitary', 'nobody']
+        indicators_found = [ind for ind in alone_indicators if ind in story_lower]
+
+    # Consider twist realized if literal OR strong narrative indicators
+    twist_realized = twist_realized_literal or len(indicators_found) >= 1
+
+    return {
+        'twist_realized_literal': twist_realized_literal,
+        'twist_realized': twist_realized,
+        'indicators_found': indicators_found,
+        'num_indicators': len(indicators_found)
+    }
+
+
+def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
+    """
+    Analyze a baseline/ablation pair.
+
+    Baseline: Outline has baseline_twist, Plan talks about baseline_twist
+    Ablation: Outline has new_twist, Plan talks about baseline_twist (CONTAMINATED!)
+
+    Check: Does ablation story use new_twist (Outline) or baseline_twist (Plan)?
+    """
+    # Extract stories
+    baseline_story = baseline_data['response']['responses'][0]['content']
+    ablation_story = ablation_data['rollout_data']['content']
+
+    # Extract twists
+    baseline_twist = baseline_data['twist_phrase']
+    new_twist = ablation_data['new_twist']
+
+    # Check baseline story (should use baseline_twist)
+    baseline_check = check_twist_in_story(baseline_story, baseline_twist)
+
+    # Check ablation story for both twists
+    ablation_baseline_check = check_twist_in_story(ablation_story, baseline_twist)  # Plan twist
+    ablation_new_check = check_twist_in_story(ablation_story, new_twist)  # Outline twist
+
+    # Determine behavior
+    if ablation_new_check['twist_realized'] and not ablation_baseline_check['twist_realized']:
+        behavior = "FOLLOWS_OUTLINE"
+    elif ablation_baseline_check['twist_realized'] and not ablation_new_check['twist_realized']:
+        behavior = "FOLLOWS_PLAN"
+    elif ablation_new_check['twist_realized'] and ablation_baseline_check['twist_realized']:
+        behavior = "USES_BOTH"
+    else:
+        behavior = "USES_NEITHER"
+
+    return {
+        'baseline_id': baseline_data['prompt_id'],
+        'ablation_id': ablation_data['twist_prompt_id'],
+        'baseline_twist': baseline_twist,
+        'new_twist': new_twist,
+        'baseline_story': baseline_story,
+        'ablation_story': ablation_story,
+        'baseline_uses_correct_twist': baseline_check['twist_realized'],
+        'baseline_indicators': baseline_check['indicators_found'],
+        'ablation_uses_outline_twist': ablation_new_check['twist_realized'],
+        'ablation_outline_indicators': ablation_new_check['indicators_found'],
+        'ablation_uses_plan_twist': ablation_baseline_check['twist_realized'],
+        'ablation_plan_indicators': ablation_baseline_check['indicators_found'],
+        'model_behavior': behavior
+    }
+
+
+def main():
+    print("="*80)
+    print("Analyzing Existing Generated Stories")
+    print("="*80)
+
+    # Load data
+    print("\nLoading ablation data...")
+    data = load_ablation_data()
+    print(f"  Baseline: {data['baseline']['prompt_id']}")
+    print(f"  Ablations: {list(data['ablations'].keys())}")
+
+    # Analyze each pair
+    print("\n" + "="*80)
+    print("Twist Realization Analysis")
+    print("="*80)
+
+    results = []
+    for twist_id, ablation in data['ablations'].items():
+        print(f"\nAnalyzing: {data['baseline']['prompt_id']} → {twist_id}")
+
+        result = analyze_story_pair(data['baseline'], ablation)
+        results.append(result)
+
+        print(f"  Baseline twist: '{result['baseline_twist']}'")
+        print(f"  New twist (Outline): '{result['new_twist']}'")
+        print(f"  Plan twist (contaminated): '{result['baseline_twist']}'")
+        print(f"\n  Baseline story uses correct twist: {result['baseline_uses_correct_twist']}")
+        print(f"    Indicators: {result['baseline_indicators']}")
+        print(f"  Ablation story uses Outline twist: {result['ablation_uses_outline_twist']}")
+        print(f"    Indicators: {result['ablation_outline_indicators']}")
+        print(f"  Ablation story uses Plan twist: {result['ablation_uses_plan_twist']}")
+        print(f"    Indicators: {result['ablation_plan_indicators']}")
+        print(f"  → Model behavior: {result['model_behavior']}")
+
+        print(f"\n  Baseline story (first 200 chars):")
+        print(f"    {result['baseline_story'][:200]}...")
+        print(f"\n  Ablation story (first 200 chars):")
+        print(f"    {result['ablation_story'][:200]}...")
+
+    # Summary
+    print("\n" + "="*80)
+    print("Summary")
+    print("="*80)
+
+    behaviors = [r['model_behavior'] for r in results]
+    behavior_counts = {
+        'FOLLOWS_OUTLINE': behaviors.count('FOLLOWS_OUTLINE'),
+        'FOLLOWS_PLAN': behaviors.count('FOLLOWS_PLAN'),
+        'USES_BOTH': behaviors.count('USES_BOTH'),
+        'USES_NEITHER': behaviors.count('USES_NEITHER')
+    }
+
+    print(f"\nBehavior Distribution:")
+    for behavior, count in behavior_counts.items():
+        pct = (count / len(results)) * 100 if results else 0
+        print(f"  {behavior}: {count}/{len(results)} ({pct:.1f}%)")
+
+    # Interpretation
+    print("\n" + "="*80)
+    print("Interpretation")
+    print("="*80)
+
+    if behavior_counts['FOLLOWS_OUTLINE'] > behavior_counts['FOLLOWS_PLAN']:
+        print("\n✓ Model primarily FOLLOWS OUTLINE (direct copy)")
+        print("  → Constraint transfer is Outline → Story (bypasses Plan)")
+    elif behavior_counts['FOLLOWS_PLAN'] > behavior_counts['FOLLOWS_OUTLINE']:
+        print("\n✓ Model primarily FOLLOWS PLAN (CoT mediation)")
+        print("  → Constraint transfer is Outline → Plan → Story")
+    elif behavior_counts['USES_BOTH'] > len(results) / 2:
+        print("\n⚠ Model uses BOTH twists (confused by conflict)")
+        print("  → May indicate both Plan and Outline influence generation")
+    else:
+        print("\n⚠ Results MIXED or model uses NEITHER twist")
+        print("  → Need more investigation or twists not literally present")
+
+    # Save results
+    output_file = Path("twist/mechanistic_interp/outputs/story_analysis_results.json")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_file, 'w') as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n✓ Results saved to: {output_file}")
+
+    print("\n" + "="*80)
+    print("Analysis complete!")
+    print("="*80)
+
+
+if __name__ == "__main__":
+    main()

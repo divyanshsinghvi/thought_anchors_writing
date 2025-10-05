@@ -68,18 +68,14 @@ def load_twist_prompt(twist_id: str, stories_dir: Path) -> Dict:
         return json.load(f)
 
 
-def find_matching_twists(baseline_data: Dict, stories_dir: Path) -> List[str]:
+def find_all_other_twists(baseline_data: Dict, stories_dir: Path) -> List[str]:
     """
-    Find all twist stories with same protagonist+goal but different twist.
+    Find ALL other twist stories (regardless of protagonist/goal).
 
     Returns list of twist IDs (e.g., ['twist_002', 'twist_003', ...])
     """
-    baseline_protagonist = baseline_data.get('protagonist')
-    baseline_goal = baseline_data.get('goal')
-    baseline_twist = baseline_data.get('twist_phrase')
     baseline_id = baseline_data.get('prompt_id')
-
-    matching_twists = []
+    all_twists = []
 
     # Iterate through all story files
     for story_file in sorted(stories_dir.glob('twist_*.json')):
@@ -89,16 +85,9 @@ def find_matching_twists(baseline_data: Dict, stories_dir: Path) -> List[str]:
         if twist_id == baseline_id:
             continue
 
-        # Load and check if protagonist+goal match
-        with open(story_file, 'r', encoding='utf-8') as f:
-            twist_data = json.load(f)
+        all_twists.append(twist_id)
 
-        if (twist_data.get('protagonist') == baseline_protagonist and
-            twist_data.get('goal') == baseline_goal and
-            twist_data.get('twist_phrase') != baseline_twist):
-            matching_twists.append(twist_id)
-
-    return matching_twists
+    return all_twists
 
 
 def create_ablated_prompt(
@@ -127,6 +116,49 @@ def create_ablated_prompt(
         ablated_prompt = f"{system_prompt}\n\n{twist_prompt_text}\n\n<think>\n{baseline_reasoning}\n"
 
     return ablated_prompt
+
+
+async def process_single_twist(
+    client: RolloutsClient,
+    baseline_id: str,
+    baseline_reasoning: str,
+    system_prompt: str,
+    twist_id: str,
+    twist_data: Dict,
+    twist_prompt_text: str,
+    think_mode: str,
+    num_rollouts: int,
+    baseline_data: Dict,
+    output_base_dir: Path
+) -> None:
+    """Process a single twist ablation."""
+
+    print(f"\n{'='*80}")
+    print(f"Processing {baseline_id} → {twist_id} ({think_mode})")
+    print(f"{'='*80}")
+
+    # Create ablated prompt
+    ablated_prompt = create_ablated_prompt(
+        baseline_reasoning=baseline_reasoning,
+        twist_prompt_text=twist_prompt_text,
+        system_prompt=system_prompt,
+        think_mode=think_mode
+    )
+
+    # Create output directory
+    output_dir = output_base_dir / f"baseline_{baseline_id}" / f"target_{twist_id}" / think_mode
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate rollouts
+    await generate_ablation_rollouts(
+        client=client,
+        ablated_prompt=ablated_prompt,
+        baseline_data=baseline_data,
+        twist_data=twist_data,
+        num_rollouts=num_rollouts,
+        output_dir=output_dir,
+        think_mode=think_mode
+    )
 
 
 async def generate_ablation_rollouts(
@@ -209,9 +241,9 @@ async def run_twist_ablation(
 
     # Auto-find matching twists if requested
     if auto_find:
-        print(f"Auto-finding twists with same protagonist+goal...")
-        twist_ids = find_matching_twists(baseline_data, stories_dir)
-        print(f"Found {len(twist_ids)} matching twists: {twist_ids}")
+        print(f"Auto-finding ALL other twists...")
+        twist_ids = find_all_other_twists(baseline_data, stories_dir)
+        print(f"Found {len(twist_ids)} other twists")
 
     if not twist_ids:
         print("No twist IDs to process. Exiting.")
@@ -239,55 +271,38 @@ async def run_twist_ablation(
         cache_dir=str(CACHE_PATH)
     )
 
-    # Process each twist
-    for twist_id in twist_ids:
-        print(f"\n{'='*80}")
-        print(f"Processing {twist_id}")
-        print(f"{'='*80}")
+    # Create tasks for async execution
+    tasks = []
 
+    for twist_id in twist_ids:
         # Load twist story to get the prompt with different twist
         twist_data = load_twist_prompt(twist_id, stories_dir)
-        print(f"New twist: {twist_data.get('twist_phrase')}")
-
-        # Get the writing prompt text (without system prompt)
         twist_prompt_text = twist_data['prompt_text']
 
         # Generate rollouts for each think mode
         for think_mode in think_modes:
-            print(f"\n  Think mode: {think_mode}")
-
-            # Create ablated prompt
-            ablated_prompt = create_ablated_prompt(
-                baseline_reasoning=baseline_reasoning,
-                twist_prompt_text=twist_prompt_text,
-                system_prompt=system_prompt,
-                think_mode=think_mode
+            tasks.append(
+                process_single_twist(
+                    client=client,
+                    baseline_id=baseline_id,
+                    baseline_reasoning=baseline_reasoning,
+                    system_prompt=system_prompt,
+                    twist_id=twist_id,
+                    twist_data=twist_data,
+                    twist_prompt_text=twist_prompt_text,
+                    think_mode=think_mode,
+                    num_rollouts=num_rollouts,
+                    baseline_data=baseline_data,
+                    output_base_dir=output_base_dir
+                )
             )
 
-            # Print the ablated prompt for analysis
-            print(f"\n  {'─'*76}")
-            print(f"  ABLATED PROMPT ({think_mode}):")
-            print(f"  {'─'*76}")
-            print(ablated_prompt[:500] + "..." if len(ablated_prompt) > 500 else ablated_prompt)
-            print(f"  {'─'*76}")
-            print(f"  Total prompt length: {len(ablated_prompt)} chars")
-            print(f"  Baseline reasoning length: {len(baseline_reasoning)} chars")
-            print(f"  {'─'*76}\n")
+    # Run all tasks concurrently
+    print(f"\n{'='*80}")
+    print(f"Running {len(tasks)} ablation tasks in parallel...")
+    print(f"{'='*80}\n")
 
-            # Create output directory: ablation_outputs/twist_NNN/think_mode/
-            output_dir = output_base_dir / twist_id / think_mode
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Generate rollouts
-            await generate_ablation_rollouts(
-                client=client,
-                ablated_prompt=ablated_prompt,
-                baseline_data=baseline_data,
-                twist_data=twist_data,
-                num_rollouts=num_rollouts,
-                output_dir=output_dir,
-                think_mode=think_mode
-            )
+    await asyncio.gather(*tasks)
 
     print(f"\n{'='*80}")
     print(f"Twist ablation complete!")
