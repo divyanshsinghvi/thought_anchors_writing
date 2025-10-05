@@ -119,10 +119,10 @@ def compute_keyword_probability(
     # Use NNsight trace to get logits
     with torch.no_grad():
         with model.trace(inputs):
-            logits_out = model.output.clone().save()
+            logits_out = model.lm_head.output.detach().save()
 
     # Get probabilities at last position - access saved value directly
-    logits = logits_out.logits.cpu()
+    logits = logits_out.cpu()
     probs = torch.softmax(logits[0, -1, :], dim=0)
 
     # Check keyword probabilities
@@ -178,7 +178,7 @@ def patch_layer_nnsight(
     # Capture source residual at chosen location
     with torch.no_grad():
         with model.trace(source_inputs):
-            src_act = get_resid_handle(model, layer, location).clone().save()
+            src_act = get_resid_handle(model, layer, location).detach().save()
         source_activation = src_act  # Saved value is directly accessible
 
         # Patch into target with alignment
@@ -188,10 +188,10 @@ def patch_layer_nnsight(
             min_len = min(source_activation.shape[1], tgt_len)
             # Patch: assign source activation to target
             tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :]
-            traced_out = model.output.clone().save()
+            traced_logits = model.lm_head.output.detach().save()
 
     # Compute patched probabilities - access saved value directly
-    logits = traced_out.logits.cpu()
+    logits = traced_logits.cpu()
     probs = torch.softmax(logits[0, -1, :], dim=0)
 
     def avg_first_token_prob(words: List[str]) -> float:
@@ -223,7 +223,7 @@ def patch_layer_nnsight(
     }
 
     # Free memory
-    del source_activation, logits, probs, traced_out, source_inputs, target_inputs
+    del source_activation, logits, probs, traced_logits, source_inputs, target_inputs
     if DEVICE == 'cuda':
         torch.cuda.empty_cache()
 
