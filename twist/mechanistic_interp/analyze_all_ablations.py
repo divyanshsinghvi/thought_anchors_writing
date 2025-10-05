@@ -147,50 +147,69 @@ def analyze_single_ablation(
     ablation_story = ablation_data['rollout_data']['content']
 
     baseline_reasoning = baseline_data['response']['responses'][0]['reasoning']
-    ablation_reasoning = ablation_data['rollout_data']['reasoning']
+
+    # For ablation reasoning:
+    # - no_more_thinking: skip computing ablation reasoning metrics
+    # - allow_more_thinking: reasoning is new (model generated)
+    ablation_reasoning = ablation_data['rollout_data'].get('reasoning')
+    think_mode = ablation_data['ablation_metadata']['think_mode']
+    analyze_reasoning = (think_mode == 'allow_more_thinking')
 
     clean_twist = baseline_data['twist_phrase']
     corrupted_twist = ablation_data['new_twist']
 
-    # Compute 8 semantic similarities
+    # Compute semantic similarities
+    baseline_content_vs_clean = compute_semantic_similarity(
+        baseline_story, clean_twist, semantic_model
+    )
+    baseline_content_vs_corrupted = compute_semantic_similarity(
+        baseline_story, corrupted_twist, semantic_model
+    )
+    ablation_content_vs_clean = compute_semantic_similarity(
+        ablation_story, clean_twist, semantic_model
+    )
+    ablation_content_vs_corrupted = compute_semantic_similarity(
+        ablation_story, corrupted_twist, semantic_model
+    )
+    baseline_reasoning_vs_clean = compute_semantic_similarity(
+        baseline_reasoning, clean_twist, semantic_model
+    )
+    baseline_reasoning_vs_corrupted = compute_semantic_similarity(
+        baseline_reasoning, corrupted_twist, semantic_model
+    )
+
     result = {
         'baseline_id': baseline_data['prompt_id'],
         'target_id': ablation_data['twist_prompt_id'],
+        'think_mode': think_mode,
         'clean_twist': clean_twist,
         'corrupted_twist': corrupted_twist,
-
-        # Core 4: Content similarities
-        'baseline_content_vs_clean': compute_semantic_similarity(
-            baseline_story, clean_twist, semantic_model
-        ),
-        'baseline_content_vs_corrupted': compute_semantic_similarity(
-            baseline_story, corrupted_twist, semantic_model
-        ),
-        'ablation_content_vs_clean': compute_semantic_similarity(
-            ablation_story, clean_twist, semantic_model
-        ),
-        'ablation_content_vs_corrupted': compute_semantic_similarity(
-            ablation_story, corrupted_twist, semantic_model
-        ),
-
-        # Additional 4: Reasoning similarities
-        'baseline_reasoning_vs_clean': compute_semantic_similarity(
-            baseline_reasoning, clean_twist, semantic_model
-        ),
-        'baseline_reasoning_vs_corrupted': compute_semantic_similarity(
-            baseline_reasoning, corrupted_twist, semantic_model
-        ),
-        'ablation_reasoning_vs_clean': compute_semantic_similarity(
-            ablation_reasoning, clean_twist, semantic_model
-        ),
-        'ablation_reasoning_vs_corrupted': compute_semantic_similarity(
-            ablation_reasoning, corrupted_twist, semantic_model
-        ),
+        'baseline_content_vs_clean': baseline_content_vs_clean,
+        'baseline_content_vs_corrupted': baseline_content_vs_corrupted,
+        'ablation_content_vs_clean': ablation_content_vs_clean,
+        'ablation_content_vs_corrupted': ablation_content_vs_corrupted,
+        'baseline_reasoning_vs_clean': baseline_reasoning_vs_clean,
+        'baseline_reasoning_vs_corrupted': baseline_reasoning_vs_corrupted,
     }
 
-    # Determine preferences
-    result['content_prefers'] = 'clean' if result['ablation_content_vs_clean'] > result['ablation_content_vs_corrupted'] else 'corrupted'
-    result['reasoning_prefers'] = 'clean' if result['ablation_reasoning_vs_clean'] > result['ablation_reasoning_vs_corrupted'] else 'corrupted'
+    # Determine content preference
+    result['content_prefers'] = 'clean' if ablation_content_vs_clean > ablation_content_vs_corrupted else 'corrupted'
+
+    # Reasoning metrics only for allow_more_thinking
+    if analyze_reasoning and ablation_reasoning is not None:
+        ablation_reasoning_vs_clean = compute_semantic_similarity(
+            ablation_reasoning, clean_twist, semantic_model
+        )
+        ablation_reasoning_vs_corrupted = compute_semantic_similarity(
+            ablation_reasoning, corrupted_twist, semantic_model
+        )
+        result['ablation_reasoning_vs_clean'] = ablation_reasoning_vs_clean
+        result['ablation_reasoning_vs_corrupted'] = ablation_reasoning_vs_corrupted
+        result['reasoning_prefers'] = 'clean' if ablation_reasoning_vs_clean > ablation_reasoning_vs_corrupted else 'corrupted'
+    else:
+        result['ablation_reasoning_vs_clean'] = None
+        result['ablation_reasoning_vs_corrupted'] = None
+        result['reasoning_prefers'] = None
 
     return result
 
@@ -237,32 +256,67 @@ def analyze_baseline_think_mode(
         )
         ablations.append(result)
 
-        print(f"  ✓ {target_id}: content={result['content_prefers']}, reasoning={result['reasoning_prefers']}")
+        reasoning_str = result['reasoning_prefers'] if result['reasoning_prefers'] is not None else 'skipped'
+        print(f"  ✓ {target_id}: content={result['content_prefers']}, reasoning={reasoning_str}")
 
     # Compute summary statistics
     if ablations:
         content_prefers_clean = sum(1 for a in ablations if a['content_prefers'] == 'clean')
-        reasoning_prefers_clean = sum(1 for a in ablations if a['reasoning_prefers'] == 'clean')
 
+        # Common aggregates
         summary = {
             'total_ablations': len(ablations),
             'content_prefers_clean': content_prefers_clean,
             'content_prefers_corrupted': len(ablations) - content_prefers_clean,
-            'reasoning_prefers_clean': reasoning_prefers_clean,
-            'reasoning_prefers_corrupted': len(ablations) - reasoning_prefers_clean,
             'avg_baseline_content_vs_clean': sum(a['baseline_content_vs_clean'] for a in ablations) / len(ablations),
             'avg_baseline_content_vs_corrupted': sum(a['baseline_content_vs_corrupted'] for a in ablations) / len(ablations),
             'avg_ablation_content_vs_clean': sum(a['ablation_content_vs_clean'] for a in ablations) / len(ablations),
             'avg_ablation_content_vs_corrupted': sum(a['ablation_content_vs_corrupted'] for a in ablations) / len(ablations),
             'avg_baseline_reasoning_vs_clean': sum(a['baseline_reasoning_vs_clean'] for a in ablations) / len(ablations),
             'avg_baseline_reasoning_vs_corrupted': sum(a['baseline_reasoning_vs_corrupted'] for a in ablations) / len(ablations),
-            'avg_ablation_reasoning_vs_clean': sum(a['ablation_reasoning_vs_clean'] for a in ablations) / len(ablations),
-            'avg_ablation_reasoning_vs_corrupted': sum(a['ablation_reasoning_vs_corrupted'] for a in ablations) / len(ablations),
         }
+
+        if think_mode == 'allow_more_thinking':
+            reasoning_prefers_clean = sum(1 for a in ablations if a['reasoning_prefers'] == 'clean')
+            # Averages for ablation reasoning (valid only in allow_more_thinking)
+            valid_clean = [a['ablation_reasoning_vs_clean'] for a in ablations if a['ablation_reasoning_vs_clean'] is not None]
+            valid_corrupt = [a['ablation_reasoning_vs_corrupted'] for a in ablations if a['ablation_reasoning_vs_corrupted'] is not None]
+            avg_ablation_reasoning_vs_clean = sum(valid_clean) / len(valid_clean) if valid_clean else None
+            avg_ablation_reasoning_vs_corrupted = sum(valid_corrupt) / len(valid_corrupt) if valid_corrupt else None
+
+            # Correlation: increase in similarity (new twist vs reasoning) vs old reasoning similarity
+            base_corr_list = [a['baseline_reasoning_vs_corrupted'] for a in ablations if a['ablation_reasoning_vs_corrupted'] is not None]
+            delta_corr_list = [a['ablation_reasoning_vs_corrupted'] - a['baseline_reasoning_vs_corrupted'] for a in ablations if a['ablation_reasoning_vs_corrupted'] is not None]
+            corr_delta_vs_old = None
+            try:
+                if len(base_corr_list) > 1:
+                    import numpy as _np
+                    if _np.std(base_corr_list) > 0 and _np.std(delta_corr_list) > 0:
+                        corr_delta_vs_old = float(_np.corrcoef(base_corr_list, delta_corr_list)[0, 1])
+            except Exception:
+                corr_delta_vs_old = None
+
+            summary.update({
+                'reasoning_prefers_clean': reasoning_prefers_clean,
+                'reasoning_prefers_corrupted': len(ablations) - reasoning_prefers_clean,
+                'avg_ablation_reasoning_vs_clean': avg_ablation_reasoning_vs_clean,
+                'avg_ablation_reasoning_vs_corrupted': avg_ablation_reasoning_vs_corrupted,
+                'corr_delta_reasoning_vs_old_reasoning': corr_delta_vs_old,
+            })
+        else:
+            # no_more_thinking: reasoning metrics are skipped
+            summary.update({
+                'reasoning_prefers_clean': None,
+                'reasoning_prefers_corrupted': None,
+                'avg_ablation_reasoning_vs_clean': None,
+                'avg_ablation_reasoning_vs_corrupted': None,
+                'corr_delta_reasoning_vs_old_reasoning': None,
+            })
 
         print(f"\n  Summary:")
         print(f"    Content prefers clean: {content_prefers_clean}/{len(ablations)} ({100*content_prefers_clean/len(ablations):.1f}%)")
-        print(f"    Reasoning prefers clean: {reasoning_prefers_clean}/{len(ablations)} ({100*reasoning_prefers_clean/len(ablations):.1f}%)")
+        if think_mode == 'allow_more_thinking':
+            print(f"    Reasoning prefers clean: {summary['reasoning_prefers_clean']}/{len(ablations)} ({100*summary['reasoning_prefers_clean']/len(ablations):.1f}%)")
     else:
         summary = {}
 
