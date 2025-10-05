@@ -21,19 +21,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from twist.config import OUTPUT_DIR_BASE_PATH
 
 # Try to import embeddings
-try:
-    from sentence_transformers import SentenceTransformer
-    import numpy as np
-    SEMANTIC_AVAILABLE = True
-except ImportError:
-    SEMANTIC_AVAILABLE = False
+from sentence_transformers import SentenceTransformer
+import numpy as np
+SEMANTIC_AVAILABLE = True
 
-try:
 from transformers import AutoTokenizer, AutoModel, pipeline as hf_pipeline
-    import torch
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
+import torch
+TRANSFORMERS_AVAILABLE = True
 
 
 class QwenEmbeddings:
