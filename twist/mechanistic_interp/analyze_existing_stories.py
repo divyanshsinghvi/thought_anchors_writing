@@ -13,10 +13,20 @@ import sys
 import argparse
 from pathlib import Path
 from typing import Dict, List
+import re
 
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from twist.config import OUTPUT_DIR_BASE_PATH
+
+# Try to import sentence transformers for semantic matching
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    SEMANTIC_AVAILABLE = True
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+    print("⚠ Warning: sentence-transformers not installed. Semantic matching unavailable.")
 
 
 def load_ablation_data(
@@ -89,6 +99,66 @@ def load_ablation_data(
     return {'baseline': baseline_data, 'ablations': ablation_data}
 
 
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into sentences using simple heuristics."""
+    # Split on period, exclamation, question mark followed by space or newline
+    sentences = re.split(r'[.!?]+[\s\n]+', text)
+    # Clean up and filter empty
+    sentences = [s.strip() for s in sentences if s.strip()]
+    return sentences
+
+
+def semantic_similarity_check(
+    story: str,
+    twist_phrase: str,
+    model: SentenceTransformer = None
+) -> Dict:
+    """
+    Check semantic similarity between story sentences and twist phrase.
+
+    Returns max similarity score and the most similar sentence.
+    """
+    if not SEMANTIC_AVAILABLE or model is None:
+        return {
+            'max_similarity': 0.0,
+            'most_similar_sentence': '',
+            'all_similarities': []
+        }
+
+    # Split story into sentences
+    sentences = split_into_sentences(story)
+    if not sentences:
+        return {
+            'max_similarity': 0.0,
+            'most_similar_sentence': '',
+            'all_similarities': []
+        }
+
+    # Encode twist and sentences
+    twist_embedding = model.encode([twist_phrase], convert_to_numpy=True)[0]
+    sentence_embeddings = model.encode(sentences, convert_to_numpy=True)
+
+    # Compute cosine similarities
+    similarities = []
+    for sent_emb in sentence_embeddings:
+        similarity = np.dot(twist_embedding, sent_emb) / (
+            np.linalg.norm(twist_embedding) * np.linalg.norm(sent_emb)
+        )
+        similarities.append(float(similarity))
+
+    # Find max
+    max_idx = int(np.argmax(similarities))
+    max_similarity = similarities[max_idx]
+    most_similar_sentence = sentences[max_idx]
+
+    return {
+        'max_similarity': max_similarity,
+        'most_similar_sentence': most_similar_sentence,
+        'all_similarities': similarities,
+        'num_sentences': len(sentences)
+    }
+
+
 def check_twist_in_story(story: str, twist_phrase: str) -> Dict:
     """
     Check if twist appears in story (literal or narrative indicators).
@@ -140,7 +210,12 @@ def check_twist_in_story(story: str, twist_phrase: str) -> Dict:
     }
 
 
-def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
+def analyze_story_pair(
+    baseline_data: dict,
+    ablation_data: dict,
+    semantic_model: SentenceTransformer = None,
+    use_semantic: bool = False
+) -> Dict:
     """
     Analyze a baseline/ablation pair.
 
@@ -167,7 +242,17 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
     ablation_baseline_check = check_twist_in_story(ablation_story, baseline_twist)  # Plan twist
     ablation_new_check = check_twist_in_story(ablation_story, new_twist)  # Outline twist
 
-    # Determine behavior
+    # Semantic similarity checks (if enabled)
+    baseline_semantic = {}
+    ablation_baseline_semantic = {}
+    ablation_new_semantic = {}
+
+    if use_semantic and semantic_model is not None:
+        baseline_semantic = semantic_similarity_check(baseline_story, baseline_twist, semantic_model)
+        ablation_baseline_semantic = semantic_similarity_check(ablation_story, baseline_twist, semantic_model)
+        ablation_new_semantic = semantic_similarity_check(ablation_story, new_twist, semantic_model)
+
+    # Determine behavior (indicator-based)
     if ablation_new_check['twist_realized'] and not ablation_baseline_check['twist_realized']:
         behavior = "FOLLOWS_OUTLINE"
     elif ablation_baseline_check['twist_realized'] and not ablation_new_check['twist_realized']:
@@ -177,7 +262,24 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
     else:
         behavior = "USES_NEITHER"
 
-    return {
+    # Determine behavior based on semantic similarity (if enabled)
+    semantic_behavior = None
+    if use_semantic and semantic_model is not None:
+        plan_sim = ablation_baseline_semantic.get('max_similarity', 0.0)
+        outline_sim = ablation_new_semantic.get('max_similarity', 0.0)
+
+        # Use threshold and comparison
+        THRESHOLD = 0.3  # Minimum similarity to consider
+        if outline_sim > THRESHOLD and plan_sim <= THRESHOLD:
+            semantic_behavior = "FOLLOWS_OUTLINE"
+        elif plan_sim > THRESHOLD and outline_sim <= THRESHOLD:
+            semantic_behavior = "FOLLOWS_PLAN"
+        elif plan_sim > THRESHOLD and outline_sim > THRESHOLD:
+            semantic_behavior = "USES_BOTH"
+        else:
+            semantic_behavior = "USES_NEITHER"
+
+    result = {
         'baseline_id': baseline_data['prompt_id'],
         'ablation_id': ablation_data['twist_prompt_id'],
         'baseline_twist': baseline_twist,
@@ -191,9 +293,23 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
         'ablation_uses_plan_twist': ablation_baseline_check['twist_realized'],
         'ablation_plan_indicators': ablation_baseline_check['indicators_found'],
         'model_behavior': behavior,
-        'baseline_reasoning' : baseline_reasoning,
-        'ablation_reasoning' : ablation_reasoning
+        'baseline_reasoning': baseline_reasoning,
+        'ablation_reasoning': ablation_reasoning
     }
+
+    # Add semantic similarity results if enabled
+    if use_semantic and semantic_model is not None:
+        result.update({
+            'semantic_baseline_similarity': baseline_semantic.get('max_similarity', 0.0),
+            'semantic_baseline_sentence': baseline_semantic.get('most_similar_sentence', ''),
+            'semantic_plan_similarity': ablation_baseline_semantic.get('max_similarity', 0.0),
+            'semantic_plan_sentence': ablation_baseline_semantic.get('most_similar_sentence', ''),
+            'semantic_outline_similarity': ablation_new_semantic.get('max_similarity', 0.0),
+            'semantic_outline_sentence': ablation_new_semantic.get('most_similar_sentence', ''),
+            'semantic_behavior': semantic_behavior
+        })
+
+    return result
 
 
 def main():
@@ -219,8 +335,30 @@ def main():
         default=None,
         help='Max rollouts to analyze per twist (default: all)'
     )
+    parser.add_argument(
+        '--use-semantic',
+        action='store_true',
+        help='Use semantic similarity matching (requires sentence-transformers)'
+    )
+    parser.add_argument(
+        '--semantic-model',
+        type=str,
+        default='all-mpnet-base-v2',
+        help='Sentence transformer model name (default: all-mpnet-base-v2)'
+    )
 
     args = parser.parse_args()
+
+    # Load semantic model if requested
+    semantic_model = None
+    if args.use_semantic:
+        if not SEMANTIC_AVAILABLE:
+            print("\n⚠ Error: sentence-transformers not installed. Install with:")
+            print("  pip install sentence-transformers")
+            return
+        print(f"\nLoading semantic model: {args.semantic_model}...")
+        semantic_model = SentenceTransformer(args.semantic_model)
+        print(f"✓ Model loaded")
 
     print("="*80)
     print("Analyzing Existing Generated Stories")
@@ -229,6 +367,7 @@ def main():
     print(f"  Baseline: {args.baseline}")
     print(f"  Think mode: {args.think_mode}")
     print(f"  Max rollouts per twist: {args.max_rollouts or 'all'}")
+    print(f"  Semantic matching: {args.use_semantic}")
 
     # Load data
     print("\nLoading ablation data...")
@@ -253,7 +392,12 @@ def main():
     for twist_id, ablation in data['ablations'].items():
         print(f"\nAnalyzing: {data['baseline']['prompt_id']} → {twist_id}")
 
-        result = analyze_story_pair(data['baseline'], ablation)
+        result = analyze_story_pair(
+            data['baseline'],
+            ablation,
+            semantic_model=semantic_model,
+            use_semantic=args.use_semantic
+        )
         results.append(result)
 
         print(f"  Baseline twist: '{result['baseline_twist']}'")
@@ -265,7 +409,16 @@ def main():
         print(f"    Indicators: {result['ablation_outline_indicators']}")
         print(f"  Ablation story uses Plan twist: {result['ablation_uses_plan_twist']}")
         print(f"    Indicators: {result['ablation_plan_indicators']}")
-        print(f"  → Model behavior: {result['model_behavior']}")
+        print(f"  → Model behavior (indicators): {result['model_behavior']}")
+
+        # Semantic similarity results
+        if args.use_semantic and 'semantic_behavior' in result:
+            print(f"\n  Semantic Similarity:")
+            print(f"    Outline twist similarity: {result['semantic_outline_similarity']:.3f}")
+            print(f"      Most similar sentence: \"{result['semantic_outline_sentence'][:100]}...\"")
+            print(f"    Plan twist similarity: {result['semantic_plan_similarity']:.3f}")
+            print(f"      Most similar sentence: \"{result['semantic_plan_sentence'][:100]}...\"")
+            print(f"  → Model behavior (semantic): {result['semantic_behavior']}")
 
         print(f"\n  Baseline story (first 200 chars):")
         print(f"    {result['baseline_story']}.")
