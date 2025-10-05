@@ -152,6 +152,9 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
     # Extract stories
     baseline_story = baseline_data['response']['responses'][0]['content']
     ablation_story = ablation_data['rollout_data']['content']
+    
+    baseline_reasoning = baseline_data['response']['responses'][0]['reasoning']
+    ablation_reasoning = ablation_data['rollout_data']['reasoning']
 
     # Extract twists
     baseline_twist = baseline_data['twist_phrase']
@@ -187,7 +190,9 @@ def analyze_story_pair(baseline_data: dict, ablation_data: dict) -> Dict:
         'ablation_outline_indicators': ablation_new_check['indicators_found'],
         'ablation_uses_plan_twist': ablation_baseline_check['twist_realized'],
         'ablation_plan_indicators': ablation_baseline_check['indicators_found'],
-        'model_behavior': behavior
+        'model_behavior': behavior,
+        'baseline_reasoning' : baseline_reasoning,
+        'ablation_reasoning' : ablation_reasoning
     }
 
 
@@ -263,9 +268,13 @@ def main():
         print(f"  → Model behavior: {result['model_behavior']}")
 
         print(f"\n  Baseline story (first 200 chars):")
-        print(f"    {result['baseline_story'][:200]}...")
+        print(f"    {result['baseline_story']}.")
         print(f"\n  Ablation story (first 200 chars):")
-        print(f"    {result['ablation_story'][:200]}...")
+        print(f"    {result['ablation_story']}.")
+        print(f"\n Baseline reasoning:")
+        print(f"    {result['baseline_reasoning']}.")
+        print(f"\n Ablation reasoning:")
+        print(f"    {result['ablation_reasoning']}.")
 
     # Summary
     print("\n" + "="*80)
