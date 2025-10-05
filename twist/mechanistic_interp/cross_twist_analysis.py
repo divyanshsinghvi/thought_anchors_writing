@@ -52,6 +52,7 @@ def analyze_cot_mediation(all_results: List[Dict]) -> Dict:
     total_ablations = 0
     content_prefers_clean_count = 0
     reasoning_prefers_clean_count = 0
+    reasoning_total = 0
 
     ablation_content_clean_sims = []
     ablation_content_corrupt_sims = []
@@ -65,8 +66,12 @@ def analyze_cot_mediation(all_results: List[Dict]) -> Dict:
 
             if ablation['content_prefers'] == 'clean':
                 content_prefers_clean_count += 1
-            if ablation['reasoning_prefers'] == 'clean':
-                reasoning_prefers_clean_count += 1
+
+            reasoning_pref = ablation.get('reasoning_prefers')
+            if reasoning_pref is not None:
+                reasoning_total += 1
+                if reasoning_pref == 'clean':
+                    reasoning_prefers_clean_count += 1
 
             ablation_content_clean_sims.append(ablation['ablation_content_vs_clean'])
             ablation_content_corrupt_sims.append(ablation['ablation_content_vs_corrupted'])
@@ -75,7 +80,10 @@ def analyze_cot_mediation(all_results: List[Dict]) -> Dict:
         return {}
 
     content_clean_pct = 100 * content_prefers_clean_count / total_ablations
-    reasoning_clean_pct = 100 * reasoning_prefers_clean_count / total_ablations
+    reasoning_clean_pct = (
+        100 * reasoning_prefers_clean_count / reasoning_total
+        if reasoning_total > 0 else None
+    )
 
     avg_clean_sim = np.mean(ablation_content_clean_sims)
     avg_corrupt_sim = np.mean(ablation_content_corrupt_sims)
@@ -96,6 +104,7 @@ def analyze_cot_mediation(all_results: List[Dict]) -> Dict:
         'content_prefers_clean_pct': content_clean_pct,
         'reasoning_prefers_clean_count': reasoning_prefers_clean_count,
         'reasoning_prefers_clean_pct': reasoning_clean_pct,
+        'reasoning_total_ablations': reasoning_total,
         'avg_ablation_content_vs_clean': avg_clean_sim,
         'avg_ablation_content_vs_corrupted': avg_corrupt_sim,
         'similarity_difference': avg_clean_sim - avg_corrupt_sim,
@@ -285,6 +294,56 @@ def analyze_baseline_resistance(all_results: List[Dict]) -> Dict:
     }
 
 
+def analyze_reasoning_shift(all_results: List[Dict]) -> Dict:
+    """Aggregate reasoning shift statistics for allow_more_thinking runs."""
+    baselines = []
+    deltas = []
+    content_prefers_corrupted = 0
+    total_with_reasoning = 0
+
+    for result in all_results:
+        if not result or result.get('think_mode') != 'allow_more_thinking':
+            continue
+
+        for ablation in result.get('ablations', []):
+            baseline_corr = ablation.get('baseline_reasoning_vs_corrupted')
+            ablation_corr = ablation.get('ablation_reasoning_vs_corrupted')
+            if baseline_corr is None or ablation_corr is None:
+                continue
+
+            baselines.append(baseline_corr)
+            deltas.append(ablation_corr - baseline_corr)
+            total_with_reasoning += 1
+            if ablation.get('content_prefers') == 'corrupted':
+                content_prefers_corrupted += 1
+
+    if total_with_reasoning < 2:
+        return {
+            'total_points': total_with_reasoning,
+            'correlation': None,
+            'mean_baseline_similarity': None,
+            'mean_shift': None,
+            'content_prefers_corrupted_pct': None,
+        }
+
+    baselines_arr = np.array(baselines)
+    deltas_arr = np.array(deltas)
+
+    valid = np.std(baselines_arr) > 0 and np.std(deltas_arr) > 0
+    correlation = float(np.corrcoef(baselines_arr, deltas_arr)[0, 1]) if valid else None
+
+    return {
+        'total_points': total_with_reasoning,
+        'correlation': correlation,
+        'mean_baseline_similarity': float(np.mean(baselines_arr)),
+        'mean_shift': float(np.mean(deltas_arr)),
+        'content_prefers_corrupted_pct': (
+            100 * content_prefers_corrupted / total_with_reasoning
+            if total_with_reasoning else None
+        ),
+    }
+
+
 def print_summary(analysis: Dict):
     """Print human-readable summary."""
     print("\n" + "=" * 80)
@@ -301,7 +360,15 @@ def print_summary(analysis: Dict):
         print(f"  Prefers clean: {cot['content_prefers_clean_count']} ({cot['content_prefers_clean_pct']:.1f}%)")
         print(f"  Prefers corrupted: {cot['total_ablations'] - cot['content_prefers_clean_count']} ({100 - cot['content_prefers_clean_pct']:.1f}%)")
         print(f"\nReasoning Preference:")
-        print(f"  Focuses on clean: {cot['reasoning_prefers_clean_count']} ({cot['reasoning_prefers_clean_pct']:.1f}%)")
+        if cot['reasoning_prefers_clean_pct'] is not None:
+            total_reasoning = cot['reasoning_total_ablations']
+            print(
+                "  Focuses on clean: "
+                f"{cot['reasoning_prefers_clean_count']}"
+                f"/{total_reasoning} ({cot['reasoning_prefers_clean_pct']:.1f}%)"
+            )
+        else:
+            print("  Skipped (no reasoning outputs in this batch)")
         print(f"\nSemantic Similarities:")
         print(f"  Avg ablation content vs clean:      {cot['avg_ablation_content_vs_clean']:.3f}")
         print(f"  Avg ablation content vs corrupted:  {cot['avg_ablation_content_vs_corrupted']:.3f}")
@@ -347,6 +414,24 @@ def print_summary(analysis: Dict):
         print(f"     Similarity diff: {data['similarity_difference']:.3f}")
         print(f"     Resistance score: {score:.3f}")
 
+    # 5. Reasoning Shift Correlation
+    print("\n5. REASONING SHIFT (allow_more_thinking)")
+    print("-" * 80)
+    shift = analysis['reasoning_shift']
+    if shift['total_points'] < 2 or shift['correlation'] is None:
+        print("\nNot enough reasoning outputs to compute correlation.")
+    else:
+        print(f"\nTotal reasoning comparisons: {shift['total_points']}")
+        print(f"Mean baseline vs corrupted similarity: {shift['mean_baseline_similarity']:.3f}")
+        sign = '+' if shift['mean_shift'] >= 0 else ''
+        print(f"Mean shift toward corrupted twist: {sign}{shift['mean_shift']:.3f}")
+        print(f"Pearson correlation (baseline alignment vs shift): {shift['correlation']:.3f}")
+        if shift['content_prefers_corrupted_pct'] is not None:
+            print(
+                "Content follow rate for corrupted twist (same subset): "
+                f"{shift['content_prefers_corrupted_pct']:.1f}%"
+            )
+
     print("\n" + "=" * 80)
 
 
@@ -387,6 +472,7 @@ def main():
         'think_mode_effect': analyze_think_mode_effect(all_results),
         'twist_stickiness': analyze_twist_stickiness(all_results),
         'baseline_resistance': analyze_baseline_resistance(all_results),
+        'reasoning_shift': analyze_reasoning_shift(all_results),
     }
 
     # Print summary
