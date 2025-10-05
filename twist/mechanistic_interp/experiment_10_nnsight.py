@@ -75,14 +75,17 @@ MATCHED_PAIRS = [
 ]
 
 def get_resid_handle(model, layer: int, location: str):
-    """Return traced handle for residual location: pre_attn, post_attn, post_mlp."""
-    if location == "pre_attn":
-        return model.model.layers[layer].self_attn.input[0][0]
+    """Return traced handle for residual location: post_attn or post_mlp.
+
+    For Qwen3 architecture:
+    - post_attn: output of o_proj (after attention, before MLP)
+    - post_mlp: output of entire transformer block
+    """
     if location == "post_attn":
-        return model.model.layers[layer].self_attn.output
+        return model.model.layers[layer].self_attn.o_proj.output
     if location == "post_mlp":
         return model.model.layers[layer].output
-    raise ValueError("location must be one of: pre_attn, post_attn, post_mlp")
+    raise ValueError("location must be: post_attn or post_mlp")
 
 
 def load_prompts(baseline_id: str, target_id: str, think_mode: str) -> str:
