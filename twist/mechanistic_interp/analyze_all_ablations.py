@@ -12,8 +12,9 @@ import json
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import re
+from copy import deepcopy
 
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -28,7 +29,7 @@ except ImportError:
     SEMANTIC_AVAILABLE = False
 
 try:
-    from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, pipeline as hf_pipeline
     import torch
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
@@ -85,6 +86,147 @@ def load_semantic_model(model_type: str = "qwen"):
         return SentenceTransformer(model_type)
 
 
+def load_presence_model(model_name: str):
+    """Load chat-style generator for twist presence detection."""
+    if not TRANSFORMERS_AVAILABLE:
+        raise ImportError("transformers not installed. Install: pip install transformers")
+
+    print(f"Loading presence model: {model_name}...")
+    generator = hf_pipeline(
+        task="text-generation",
+        model=model_name,
+        tokenizer=model_name
+    )
+    print("✓ Presence model loaded")
+    return generator
+
+
+def empty_presence() -> Dict[str, Dict[str, Optional[float]]]:
+    """Return a fresh empty presence structure."""
+    return {
+        'clean': {'present': None, 'confidence': None},
+        'corrupted': {'present': None, 'confidence': None}
+    }
+
+
+def _extract_presence_from_text(text: str) -> Optional[Dict[str, Dict[str, Optional[float]]]]:
+    """Extract presence data from a JSON block in the model response."""
+
+    if not text or "{" not in text:
+        return None
+
+    try:
+        matches = re.findall(r"\{.*\}", text, re.DOTALL)
+        if not matches:
+            return None
+        parsed = None
+        for candidate in reversed(matches):
+            try:
+                parsed = json.loads(candidate)
+                break
+            except json.JSONDecodeError:
+                continue
+        if parsed is None:
+            return None
+
+        clean = parsed.get('clean', {})
+        corrupted = parsed.get('corrupted', {})
+
+        def normalize(entry):
+            present = entry.get('present')
+            confidence = entry.get('confidence')
+            if isinstance(present, str):
+                present_lower = present.lower()
+                if present_lower in {'true', 'yes', 'present'}:
+                    present = True
+                elif present_lower in {'false', 'no', 'absent'}:
+                    present = False
+                else:
+                    present = None
+            if isinstance(confidence, str):
+                try:
+                    confidence = float(confidence)
+                except ValueError:
+                    confidence = None
+            return {
+                'present': present if isinstance(present, bool) else None,
+                'confidence': confidence if isinstance(confidence, (int, float)) else None
+            }
+
+        return {
+            'clean': normalize(clean),
+            'corrupted': normalize(corrupted)
+        }
+    except Exception:
+        return None
+
+
+def compute_twist_presence(
+    text: str,
+    clean_twist: str,
+    corrupted_twist: str,
+    generator,
+    threshold: float = 0.5
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """Query LLM to estimate twist presence via JSON response."""
+
+    default_presence = empty_presence()
+
+    if generator is None:
+        return default_presence
+
+    text = text or ""
+    if not text.strip() or not (clean_twist or corrupted_twist):
+        return default_presence
+
+    try:
+        prompt = (
+            "You are checking whether a story contains specific narrative twists.\n"
+            "Return a strict JSON object with this schema:\n"
+            "{\n"
+            "  \"clean\": {\"present\": true|false, \"confidence\": float between 0 and 1},\n"
+            "  \"corrupted\": {\"present\": true|false, \"confidence\": float between 0 and 1}\n"
+            "}.\n"
+            "Confidence should reflect your certainty that the twist is explicitly or implicitly present.\n"
+            f"Clean twist: {clean_twist or 'N/A'}\n"
+            f"Corrupted twist: {corrupted_twist or 'N/A'}\n"
+            "Story:\n"
+            f"{text}\n"
+            "JSON:"
+        )
+
+        generations = generator(
+            prompt,
+            max_new_tokens=200,
+            do_sample=False,
+            temperature=0.0
+        )
+        if not generations:
+            return default_presence
+
+        raw_output = generations[0].get('generated_text', '')
+        if isinstance(raw_output, list) and raw_output:
+            raw_output = raw_output[0]
+
+        presence = _extract_presence_from_text(raw_output)
+        if not presence:
+            return default_presence
+
+        for key in ['clean', 'corrupted']:
+            entry = presence.get(key, {})
+            present = entry.get('present')
+            confidence = entry.get('confidence')
+            if present is None and isinstance(confidence, (int, float)):
+                entry['present'] = confidence >= threshold
+            presence[key] = entry
+
+        return presence
+    except Exception as exc:
+        print(f"  ⚠ Presence classification failed: {exc}")
+        return default_presence
+    return default_presence
+
+
 def compute_semantic_similarity(text1, text2, model) -> float:
     """Compute cosine similarity between two texts."""
     if model is None:
@@ -138,7 +280,9 @@ def load_ablation_rollout(
 def analyze_single_ablation(
     baseline_data: Dict,
     ablation_data: Dict,
-    semantic_model
+    semantic_model,
+    presence_classifier=None,
+    presence_threshold: float = 0.5
 ) -> Dict:
     """Compute 8 semantic similarities for one ablation pair."""
 
@@ -211,6 +355,50 @@ def analyze_single_ablation(
         result['ablation_reasoning_vs_corrupted'] = None
         result['reasoning_prefers'] = None
 
+    if presence_classifier is not None:
+        baseline_presence = compute_twist_presence(
+            baseline_story,
+            clean_twist,
+            corrupted_twist,
+            presence_classifier,
+            presence_threshold
+        )
+        ablation_presence = compute_twist_presence(
+            ablation_story,
+            clean_twist,
+            corrupted_twist,
+            presence_classifier,
+            presence_threshold
+        )
+        baseline_reasoning_presence = compute_twist_presence(
+            baseline_reasoning,
+            clean_twist,
+            corrupted_twist,
+            presence_classifier,
+            presence_threshold
+        )
+        if analyze_reasoning and ablation_reasoning is not None:
+            ablation_reasoning_presence = compute_twist_presence(
+                ablation_reasoning,
+                clean_twist,
+                corrupted_twist,
+                presence_classifier,
+                presence_threshold
+            )
+        else:
+            ablation_reasoning_presence = empty_presence()
+
+        result['baseline_presence'] = baseline_presence
+        result['ablation_presence'] = ablation_presence
+        result['baseline_reasoning_presence'] = baseline_reasoning_presence
+        result['ablation_reasoning_presence'] = ablation_reasoning_presence
+    else:
+        default_presence = empty_presence()
+        result['baseline_presence'] = deepcopy(default_presence)
+        result['ablation_presence'] = deepcopy(default_presence)
+        result['baseline_reasoning_presence'] = deepcopy(default_presence)
+        result['ablation_reasoning_presence'] = deepcopy(default_presence)
+
     return result
 
 
@@ -219,7 +407,9 @@ def analyze_baseline_think_mode(
     think_mode: str,
     semantic_model,
     stories_dir: Path,
-    ablation_dir: Path
+    ablation_dir: Path,
+    presence_classifier=None,
+    presence_threshold: float = 0.5
 ) -> Dict:
     """Analyze all ablations for one baseline × think_mode combination."""
 
@@ -252,7 +442,11 @@ def analyze_baseline_think_mode(
 
         # Analyze
         result = analyze_single_ablation(
-            baseline_data, ablation_data, semantic_model
+            baseline_data,
+            ablation_data,
+            semantic_model,
+            presence_classifier=presence_classifier,
+            presence_threshold=presence_threshold
         )
         ablations.append(result)
 
@@ -313,10 +507,95 @@ def analyze_baseline_think_mode(
                 'corr_delta_reasoning_vs_old_reasoning': None,
             })
 
+        if presence_classifier is not None:
+            def summarize_presence_field(field: str) -> Dict[str, Dict[str, Optional[float]]]:
+                summary_data = {
+                    'clean': {'present_count': 0, 'total': 0, 'confidence_avg': None},
+                    'corrupted': {'present_count': 0, 'total': 0, 'confidence_avg': None}
+                }
+
+                clean_confidences = []
+                corrupt_confidences = []
+
+                for ablation in ablations:
+                    presence = ablation.get(field) or empty_presence()
+
+                    clean_present = presence['clean'].get('present')
+                    if clean_present is not None:
+                        summary_data['clean']['total'] += 1
+                        if clean_present:
+                            summary_data['clean']['present_count'] += 1
+                    clean_conf = presence['clean'].get('confidence')
+                    if isinstance(clean_conf, (int, float)):
+                        clean_confidences.append(clean_conf)
+
+                    corrupt_present = presence['corrupted'].get('present')
+                    if corrupt_present is not None:
+                        summary_data['corrupted']['total'] += 1
+                        if corrupt_present:
+                            summary_data['corrupted']['present_count'] += 1
+                    corrupt_conf = presence['corrupted'].get('confidence')
+                    if isinstance(corrupt_conf, (int, float)):
+                        corrupt_confidences.append(corrupt_conf)
+
+                if clean_confidences:
+                    summary_data['clean']['confidence_avg'] = sum(clean_confidences) / len(clean_confidences)
+                if corrupt_confidences:
+                    summary_data['corrupted']['confidence_avg'] = sum(corrupt_confidences) / len(corrupt_confidences)
+
+                return summary_data
+
+            presence_summary = {
+                'baseline_story': summarize_presence_field('baseline_presence'),
+                'ablation_story': summarize_presence_field('ablation_presence'),
+                'baseline_reasoning': summarize_presence_field('baseline_reasoning_presence'),
+                'ablation_reasoning': summarize_presence_field('ablation_reasoning_presence'),
+            }
+
+            summary['presence'] = presence_summary
+
         print(f"\n  Summary:")
         print(f"    Content prefers clean: {content_prefers_clean}/{len(ablations)} ({100*content_prefers_clean/len(ablations):.1f}%)")
         if think_mode == 'allow_more_thinking':
             print(f"    Reasoning prefers clean: {summary['reasoning_prefers_clean']}/{len(ablations)} ({100*summary['reasoning_prefers_clean']/len(ablations):.1f}%)")
+        if presence_classifier is not None and summary.get('presence'):
+            presence_labels = {
+                'baseline_story': 'Baseline story',
+                'ablation_story': 'Ablation story',
+                'baseline_reasoning': 'Baseline reasoning',
+                'ablation_reasoning': 'Ablation reasoning',
+            }
+            print("    Twist presence (LLM check):")
+            for key, label in presence_labels.items():
+                data = summary['presence'].get(key)
+                if not data:
+                    print(f"      {label}: N/A")
+                    continue
+
+                clean = data['clean']
+                corrupt = data['corrupted']
+
+                if clean['total']:
+                    clean_pct = 100 * clean['present_count'] / clean['total']
+                    clean_conf = clean['confidence_avg']
+                    clean_conf_str = f", avg conf {clean_conf:.2f}" if clean_conf is not None else ""
+                    print(
+                        f"      {label} – clean: {clean['present_count']}/{clean['total']}"
+                        f" ({clean_pct:.1f}%{clean_conf_str})"
+                    )
+                else:
+                    print(f"      {label} – clean: N/A")
+
+                if corrupt['total']:
+                    corrupt_pct = 100 * corrupt['present_count'] / corrupt['total']
+                    corrupt_conf = corrupt['confidence_avg']
+                    corrupt_conf_str = f", avg conf {corrupt_conf:.2f}" if corrupt_conf is not None else ""
+                    print(
+                        f"      {label} – corrupted: {corrupt['present_count']}/{corrupt['total']}"
+                        f" ({corrupt_pct:.1f}%{corrupt_conf_str})"
+                    )
+                else:
+                    print(f"      {label} – corrupted: N/A")
     else:
         summary = {}
 
@@ -352,6 +631,18 @@ def main():
         help='Embedding model (default: qwen)'
     )
     parser.add_argument(
+        '--presence-model',
+        type=str,
+        default=None,
+        help='Zero-shot HF model for twist presence detection (e.g., facebook/bart-large-mnli)'
+    )
+    parser.add_argument(
+        '--presence-threshold',
+        type=float,
+        default=0.5,
+        help='Confidence threshold for marking twist presence'
+    )
+    parser.add_argument(
         '--output-dir',
         type=Path,
         default=Path('twist/mechanistic_interp/outputs/batch_analysis'),
@@ -368,11 +659,18 @@ def main():
     print(f"  Think modes: {args.think_modes}")
     print(f"  Semantic model: {args.semantic_model}")
     print(f"  Output dir: {args.output_dir}")
+    if args.presence_model:
+        print(f"  Presence model: {args.presence_model}")
+        print(f"  Presence threshold: {args.presence_threshold}")
 
     # Load semantic model
     print(f"\nLoading semantic model...")
     semantic_model = load_semantic_model(args.semantic_model)
     print(f"✓ Model loaded")
+
+    presence_classifier = None
+    if args.presence_model:
+        presence_classifier = load_presence_model(args.presence_model)
 
     # Paths
     stories_dir = OUTPUT_DIR_BASE_PATH / "stories"
@@ -391,7 +689,9 @@ def main():
                 think_mode,
                 semantic_model,
                 stories_dir,
-                ablation_dir
+                ablation_dir,
+                presence_classifier=presence_classifier,
+                presence_threshold=args.presence_threshold
             )
 
             if result:
