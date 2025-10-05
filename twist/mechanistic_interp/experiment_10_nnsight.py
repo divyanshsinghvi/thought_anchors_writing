@@ -100,15 +100,25 @@ def load_prompts(baseline_id: str, target_id: str, think_mode: str) -> str:
     return data['ablated_prompt']
 
 
-def compute_keyword_probability(
+def generate_and_count_keywords(
     model: LanguageModel,
     tokenizer: AutoTokenizer,
     prompt: str,
-    keywords: List[str]
-) -> float:
-    """Compute average probability of keywords as next token using NNsight trace."""
+    clean_keywords: List[str],
+    corrupted_keywords: List[str],
+    max_new_tokens: int = 150
+) -> Dict:
+    """Generate story text and count both clean and corrupted keyword occurrences.
 
-    # Tokenize
+    Returns:
+        {
+            'clean_count': number of clean keyword occurrences,
+            'corrupted_count': number of corrupted keyword occurrences,
+            'total_tokens': number of tokens generated,
+            'generated_text': the generated story (truncated to 200 chars)
+        }
+    """
+    # Tokenize prompt
     inputs = tokenizer(
         prompt,
         return_tensors="pt",
@@ -116,33 +126,40 @@ def compute_keyword_probability(
         max_length=MAX_INPUT_TOKENS
     ).to(DEVICE)
 
-    # Use NNsight trace to get logits
-    with torch.no_grad():
-        with model.trace(inputs):
-            logits_out = model.lm_head.output.detach().save()
+    # Generate story (NNsight handles no_grad internally)
+    output_ids = model.generate(
+        inputs.input_ids,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,  # Deterministic for consistency
+        pad_token_id=tokenizer.eos_token_id,
+    )
 
-    # Get probabilities at last position - access saved value directly
-    logits = logits_out.cpu()
-    probs = torch.softmax(logits[0, -1, :], dim=0)
+    # Decode generated text (only new tokens)
+    generated_ids = output_ids[0][inputs.input_ids.shape[1]:]
+    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-    # Check keyword probabilities
-    keyword_probs = []
-    for keyword in keywords:
-        # Tokenize keyword
-        keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
-        if len(keyword_tokens) > 0:
-            first_token = keyword_tokens[0]
-            prob_val = probs[first_token]
-            keyword_probs.append(prob_val.item())
+    # Count keywords (case-insensitive)
+    generated_lower = generated_text.lower()
 
-    result = np.mean(keyword_probs) if keyword_probs else 0.0
+    clean_count = 0
+    for keyword in clean_keywords:
+        clean_count += generated_lower.count(keyword.lower())
+
+    corrupted_count = 0
+    for keyword in corrupted_keywords:
+        corrupted_count += generated_lower.count(keyword.lower())
 
     # Free memory
-    del logits, probs, logits_out, inputs
+    del inputs, output_ids, generated_ids
     if DEVICE == 'cuda':
         torch.cuda.empty_cache()
 
-    return result
+    return {
+        'clean_count': clean_count,
+        'corrupted_count': corrupted_count,
+        'total_tokens': len(generated_text.split()),
+        'generated_text': generated_text[:200] + '...' if len(generated_text) > 200 else generated_text
+    }
 
 
 def patch_layer_nnsight(
@@ -153,21 +170,31 @@ def patch_layer_nnsight(
     layer: int,
     clean_keywords: List[str],
     corrupted_keywords: List[str],
-    location: str = "post_attn"
+    location: str = "post_attn",
+    max_new_tokens: int = 150
 ) -> Dict:
-    """Layer-level patch using NNsight with proper tracing and length alignment."""
+    """Layer-level patch using NNsight - generates text and counts keywords."""
 
-    # Baseline (no patching)
-    baseline_clean = compute_keyword_probability(model, tokenizer, target_prompt, clean_keywords)
-    baseline_corr = compute_keyword_probability(model, tokenizer, target_prompt, corrupted_keywords)
+    # Baseline (no patching) - generate once and count both keyword sets
+    baseline_result = generate_and_count_keywords(
+        model, tokenizer, target_prompt, clean_keywords, corrupted_keywords, max_new_tokens
+    )
 
-    # Tokenize both prompts
+    # Tokenize source prompt to capture activations
     source_inputs = tokenizer(
         source_prompt,
         return_tensors="pt",
         truncation=True,
         max_length=MAX_INPUT_TOKENS
     ).to(DEVICE)
+
+    # Capture source activation at the specified layer
+    with torch.no_grad():
+        with model.trace(source_inputs):
+            src_act = get_resid_handle(model, layer, location).detach().save()
+        source_activation = src_act
+
+    # Tokenize target prompt for patched generation
     target_inputs = tokenizer(
         target_prompt,
         return_tensors="pt",
@@ -175,55 +202,66 @@ def patch_layer_nnsight(
         max_length=MAX_INPUT_TOKENS
     ).to(DEVICE)
 
-    # Capture source residual at chosen location
+    # Patched generation with manual loop - patch at EVERY generation step
+    current_ids = target_inputs.input_ids.clone()
+
     with torch.no_grad():
-        with model.trace(source_inputs):
-            src_act = get_resid_handle(model, layer, location).detach().save()
-        source_activation = src_act  # Saved value is directly accessible
+        for step in range(max_new_tokens):
+            # Run forward pass with patch at layer L
+            with model.trace(current_ids):
+                tgt_handle = get_resid_handle(model, layer, location)
 
-        # Patch into target with alignment
-        with model.trace(target_inputs):
-            tgt_handle = get_resid_handle(model, layer, location)
-            tgt_len = int(target_inputs["input_ids"].shape[1])
-            min_len = min(source_activation.shape[1], tgt_len)
-            # Patch: assign source activation to target
-            tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :]
-            traced_logits = model.lm_head.output.detach().save()
+                # Patch: replace target activation with source activation
+                # Only patch the prompt tokens (not generated tokens)
+                prompt_len = target_inputs.input_ids.shape[1]
+                min_len = min(source_activation.shape[1], prompt_len)
+                tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :]
 
-    # Compute patched probabilities - access saved value directly
-    logits = traced_logits.cpu()
-    probs = torch.softmax(logits[0, -1, :], dim=0)
+                # Save logits for next token prediction
+                next_logits = model.lm_head.output.save()
 
-    def avg_first_token_prob(words: List[str]) -> float:
-        ids = []
-        for w in words:
-            tok = tokenizer.encode(w, add_special_tokens=False)
-            if tok:
-                ids.append(tok[0])
-        if not ids:
-            return 0.0
-        idx = torch.tensor(ids, dtype=torch.long)
-        vals = probs.index_select(0, idx)
-        return float(vals.mean().item())
+            # Get next token (greedy decoding)
+            next_token_logits = next_logits[0, -1, :]
+            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True).unsqueeze(0)
 
-    patched_clean = avg_first_token_prob(clean_keywords)
-    patched_corr = avg_first_token_prob(corrupted_keywords)
+            # Append to sequence
+            current_ids = torch.cat([current_ids, next_token], dim=1)
+
+            # Stop if we hit EOS token
+            if next_token.item() == tokenizer.eos_token_id:
+                break
+
+    patched_output_ids = current_ids
+
+    # Decode patched generation
+    patched_generated_ids = patched_output_ids[0][target_inputs.input_ids.shape[1]:]
+    patched_text = tokenizer.decode(patched_generated_ids, skip_special_tokens=True)
+
+    # Count keywords in patched generation
+    patched_lower = patched_text.lower()
+    patched_clean_count = sum(patched_lower.count(kw.lower()) for kw in clean_keywords)
+    patched_corrupted_count = sum(patched_lower.count(kw.lower()) for kw in corrupted_keywords)
 
     result = {
         'layer': layer,
-        'baseline_clean_prob': float(baseline_clean),
-        'baseline_corrupted_prob': float(baseline_corr),
-        'patched_clean_prob': float(patched_clean),
-        'patched_corrupted_prob': float(patched_corr),
-        'delta_clean': float(patched_clean - baseline_clean),
-        'delta_corrupted': float(patched_corr - baseline_corr),
-        'baseline_corr_minus_clean': float(baseline_corr - baseline_clean),
-        'patched_corr_minus_clean': float(patched_corr - patched_clean),
-        'delta_corr_minus_clean': float((patched_corr - patched_clean) - (baseline_corr - baseline_clean)),
+        'baseline_clean_count': baseline_result['clean_count'],
+        'baseline_corrupted_count': baseline_result['corrupted_count'],
+        'baseline_total_tokens': baseline_result['total_tokens'],
+        'baseline_text': baseline_result['generated_text'],
+        'patched_clean_count': patched_clean_count,
+        'patched_corrupted_count': patched_corrupted_count,
+        'patched_total_tokens': len(patched_text.split()),
+        'patched_text': patched_text[:200] + '...' if len(patched_text) > 200 else patched_text,
+        'delta_clean': patched_clean_count - baseline_result['clean_count'],
+        'delta_corrupted': patched_corrupted_count - baseline_result['corrupted_count'],
+        'baseline_corr_minus_clean': baseline_result['corrupted_count'] - baseline_result['clean_count'],
+        'patched_corr_minus_clean': patched_corrupted_count - patched_clean_count,
+        'delta_corr_minus_clean': (patched_corrupted_count - patched_clean_count) -
+                                   (baseline_result['corrupted_count'] - baseline_result['clean_count']),
     }
 
     # Free memory
-    del source_activation, logits, probs, traced_logits, source_inputs, target_inputs
+    del source_activation, source_inputs, target_inputs, patched_output_ids, patched_generated_ids
     if DEVICE == 'cuda':
         torch.cuda.empty_cache()
 
@@ -338,15 +376,24 @@ def main():
     print(f"\nLoading model with NNsight: {args.model}")
     print("This may take a few minutes...")
 
-    # Load model on specific device (not 'auto' to avoid meta tensors)
+    # Load model with proper device handling for NNsight
     dtype = torch.float16 if DEVICE == 'cuda' else torch.float32
     try:
-        model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
+        # For NNsight, specify device via dispatch parameter
+        if DEVICE == 'cuda':
+            model = LanguageModel(
+                args.model,
+                torch_dtype=dtype,
+                device_map='cuda',  # Use device_map for proper loading
+                dispatch=True
+            )
+        else:
+            model = LanguageModel(args.model, torch_dtype=dtype, dispatch=True)
     except RuntimeError as e:
         print(f"\n⚠ CUDA load failed ({e}); falling back to CPU")
         DEVICE = 'cpu'
         dtype = torch.float32
-        model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
+        model = LanguageModel(args.model, torch_dtype=dtype, dispatch=True)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     print(f"✓ Model loaded")
@@ -412,9 +459,9 @@ def main():
 
     # Display
     print("\n" + "=" * 80)
-    print("TOP 10 LAYERS")
+    print("TOP 10 LAYERS (ranked by effect on keyword counts)")
     print("=" * 80)
-    print(f"{'Layer':<8} {'bClean':<10} {'pClean':<10} {'Δclean':<9} {'b( corr-clean )':<18} {'p( corr-clean )':<18} {'Δdiff':<10}")
+    print(f"{'Layer':<8} {'bClean':<8} {'pClean':<8} {'Δclean':<8} {'b(C-c)':<8} {'p(C-c)':<8} {'Δdiff':<8}")
     print("-" * 80)
 
     if not all_results_sorted:
@@ -423,12 +470,12 @@ def main():
         for result in all_results_sorted[:10]:
             print(
                 f"{result['layer']:<8} "
-                f"{result.get('baseline_clean_prob', 0.0):<10.6f} "
-                f"{result.get('patched_clean_prob', 0.0):<10.6f} "
-                f"{result.get('delta_clean', 0.0):+9.6f} "
-                f"{result.get('baseline_corr_minus_clean', 0.0):<18.6f} "
-                f"{result.get('patched_corr_minus_clean', 0.0):<18.6f} "
-                f"{result.get('delta_corr_minus_clean', 0.0):+10.6f}"
+                f"{result.get('baseline_clean_count', 0):<8} "
+                f"{result.get('patched_clean_count', 0):<8} "
+                f"{result.get('delta_clean', 0):+8} "
+                f"{result.get('baseline_corr_minus_clean', 0):<8} "
+                f"{result.get('patched_corr_minus_clean', 0):<8} "
+                f"{result.get('delta_corr_minus_clean', 0):+8}"
             )
 
 
