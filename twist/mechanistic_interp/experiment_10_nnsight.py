@@ -92,17 +92,17 @@ def compute_keyword_probability(
     prompt: str,
     keywords: List[str]
 ) -> float:
-    """Compute average probability of keywords as next token."""
+    """Compute average probability of keywords as next token using NNsight trace."""
 
     # Tokenize
     inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
 
-    with torch.no_grad():
-        outputs = model(**inputs)
-        logits = outputs.logits
+    # Use NNsight trace to get logits
+    with model.trace(inputs):
+        logits_out = model.output.save()
 
     # Get probabilities at last position
-    # Ensure tensor is on CPU and materialized before calling .item()
+    logits = logits_out.logits
     probs = torch.softmax(logits[0, -1, :], dim=0).cpu()
 
     # Check keyword probabilities
@@ -112,10 +112,8 @@ def compute_keyword_probability(
         keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
         if len(keyword_tokens) > 0:
             first_token = keyword_tokens[0]
-            # Ensure we have actual tensor before .item()
             prob_val = probs[first_token]
-            if prob_val.device.type != 'meta':
-                keyword_probs.append(prob_val.item())
+            keyword_probs.append(prob_val.item())
 
     return np.mean(keyword_probs) if keyword_probs else 0.0
 
@@ -126,58 +124,62 @@ def patch_layer_nnsight(
     source_prompt: str,
     target_prompt: str,
     layer: int,
-    clean_keywords: List[str]
+    clean_keywords: List[str],
+    corrupted_keywords: List[str]
 ) -> Dict:
     """Layer-level patch using NNsight with proper tracing and length alignment."""
 
     # Baseline (no patching)
-    baseline_prob = compute_keyword_probability(model, tokenizer, target_prompt, clean_keywords)
+    baseline_clean = compute_keyword_probability(model, tokenizer, target_prompt, clean_keywords)
+    baseline_corr = compute_keyword_probability(model, tokenizer, target_prompt, corrupted_keywords)
 
     # Tokenize both prompts
     source_inputs = tokenizer(source_prompt, return_tensors="pt").to(DEVICE)
     target_inputs = tokenizer(target_prompt, return_tensors="pt").to(DEVICE)
 
     # Capture source layer output
-    with model.trace(source_inputs) as t_src:
-        src_o_proj = t_src(model.model.layers[layer].self_attn.o_proj).output.save()
-        _ = model(**source_inputs)
-    source_activation = src_o_proj.value
+    with model.trace(source_inputs):
+        src_o_proj = model.model.layers[layer].self_attn.o_proj.output.save()
+    source_activation = src_o_proj
 
-    # Patch into target with alignment
-    with model.trace(target_inputs) as t_tgt:
-        tgt_o_proj = t_tgt(model.model.layers[layer].self_attn.o_proj).output
-        _ = model(**target_inputs)
-
-        try:
-            tgt_val = tgt_o_proj.value
-        except Exception:
-            _ = t_tgt(model.model.layers[layer].self_attn.o_proj).output.save()
-            tgt_val = tgt_o_proj.value
-
-        min_len = min(source_activation.shape[1], tgt_val.shape[1])
+    # Patch into target with alignment (schedule overwrite BEFORE forward)
+    with model.trace(target_inputs):
+        tgt_o_proj = model.model.layers[layer].self_attn.o_proj.output
+        tgt_len = int(target_inputs["input_ids"].shape[1])
+        min_len = min(source_activation.shape[1], tgt_len)
         tgt_o_proj[:, :min_len, :] = source_activation[:, :min_len, :]
+        traced_out = model.output.save()
 
-        patched_logits = t_tgt(model.lm_head).output.save()
+    # Compute patched probabilities (clean + corrupted) from traced logits
+    logits = traced_out.logits  # [1, seq, vocab]
+    probs = torch.softmax(logits[0, -1, :], dim=0).to('cpu')
 
-    # Compute patched probability
-    # Ensure tensor is materialized on CPU before .item()
-    probs = torch.softmax(patched_logits.value[0, -1, :], dim=0).cpu()
+    def avg_first_token_prob(words: List[str]) -> float:
+        ids = []
+        for w in words:
+            tok = tokenizer.encode(w, add_special_tokens=False)
+            if tok:
+                ids.append(tok[0])
+        if not ids:
+            return 0.0
+        idx = torch.tensor(ids, dtype=torch.long)
+        vals = probs.index_select(0, idx)
+        return float(vals.mean().item())
 
-    keyword_probs = []
-    for keyword in clean_keywords:
-        keyword_tokens = tokenizer.encode(keyword, add_special_tokens=False)
-        if len(keyword_tokens) > 0:
-            prob_val = probs[keyword_tokens[0]]
-            if prob_val.device.type != 'meta':
-                keyword_probs.append(prob_val.item())
-
-    patched_prob = np.mean(keyword_probs) if keyword_probs else 0.0
+    patched_clean = avg_first_token_prob(clean_keywords)
+    patched_corr = avg_first_token_prob(corrupted_keywords)
 
     return {
         'layer': layer,
-        'baseline_prob': float(baseline_prob),
-        'patched_prob': float(patched_prob),
-        'delta': float(patched_prob - baseline_prob)
+        'baseline_clean_prob': float(baseline_clean),
+        'baseline_corrupted_prob': float(baseline_corr),
+        'patched_clean_prob': float(patched_clean),
+        'patched_corrupted_prob': float(patched_corr),
+        'delta_clean': float(patched_clean - baseline_clean),
+        'delta_corrupted': float(patched_corr - baseline_corr),
+        'baseline_corr_minus_clean': float(baseline_corr - baseline_clean),
+        'patched_corr_minus_clean': float(patched_corr - patched_clean),
+        'delta_corr_minus_clean': float((patched_corr - patched_clean) - (baseline_corr - baseline_clean)),
     }
 
 
@@ -188,6 +190,7 @@ def scan_layer_nnsight(
     target_prompt: str,
     layer: int,
     clean_keywords: List[str],
+    corrupted_keywords: List[str],
     cache_file: Path
 ) -> List[Dict]:
     """Scan all heads in a layer with caching."""
@@ -204,16 +207,12 @@ def scan_layer_nnsight(
 
     results = []
 
-    try:
-        # Layer-level patching first (head-level requires arch-specific hooks)
-        result = patch_layer_nnsight(
-            model, tokenizer, source_prompt, target_prompt, layer, clean_keywords
-        )
-        result['head'] = 'all'  # Mark as layer-level
-        results.append(result)
-
-    except Exception as e:
-        print(f"\n  Error at layer {layer}: {e}")
+    # Layer-level patching first (head-level requires arch-specific hooks)
+    result = patch_layer_nnsight(
+        model, tokenizer, source_prompt, target_prompt, layer, clean_keywords, corrupted_keywords
+    )
+    result['head'] = 'all'  # Mark as layer-level
+    results.append(result)
 
     # Save to cache
     cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +227,8 @@ def main():
     parser.add_argument('--pair', type=int, default=1, choices=[1, 2, 3, 4])
     parser.add_argument('--model', type=str, default='Qwen/Qwen3-8B',
                        help='Any HuggingFace model (e.g., Qwen/Qwen2.5-14B, Qwen/Qwen2.5-7B)')
+    parser.add_argument('--refresh-cache', action='store_true',
+                       help='Clear cache before running')
     args = parser.parse_args()
 
     config = MATCHED_PAIRS[args.pair - 1]
@@ -241,6 +242,14 @@ def main():
     # Setup
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Clear cache if requested
+    if args.refresh_cache:
+        import shutil
+        if CACHE_DIR.exists():
+            shutil.rmtree(CACHE_DIR)
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            print("\n✓ Cache cleared")
 
     # Load prompts
     print("\nLoading prompts...")
@@ -259,11 +268,8 @@ def main():
     print("This may take a few minutes...")
 
     # Load model on specific device (not 'auto' to avoid meta tensors)
-    model = LanguageModel(
-        args.model,
-        device_map=DEVICE,  # Use specific device, not 'auto'
-        torch_dtype=torch.float16 if DEVICE == 'cuda' else torch.float32
-    )
+    dtype = torch.float16 if DEVICE == 'cuda' else torch.float32
+    model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     print(f"✓ Model loaded")
@@ -280,18 +286,22 @@ def main():
     all_results = []
     n_layers = model.config.num_hidden_layers
 
+    # Corrupted keywords: default to using the corrupted twist phrase's first token
+    corrupted_keywords = [config['corrupted_twist']]
+
     for layer in tqdm(range(n_layers), desc="Layers"):
         cache_file = CACHE_DIR / f"pair{args.pair}_layer{layer:02d}.json"
 
         layer_results = scan_layer_nnsight(
             model, tokenizer, source_prompt, target_prompt,
-            layer, config['clean_keywords'], cache_file
+            layer, config['clean_keywords'], corrupted_keywords, cache_file
         )
 
         all_results.extend(layer_results)
 
     # Sort and save
-    all_results_sorted = sorted(all_results, key=lambda x: x.get('delta', 0.0), reverse=True)
+    # Rank by change in corrupted-minus-clean (override differential)
+    all_results_sorted = sorted(all_results, key=lambda x: x.get('delta_corr_minus_clean', 0.0), reverse=True)
 
     output_file = OUTPUT_DIR / f"pair{args.pair}_nnsight_results.json"
     with open(output_file, 'w') as f:
@@ -309,15 +319,18 @@ def main():
     print("\n" + "=" * 80)
     print("TOP 10 LAYERS")
     print("=" * 80)
-    print(f"{'Layer':<8} {'Baseline':<12} {'Patched':<12} {'Delta':<12}")
+    print(f"{'Layer':<8} {'bClean':<10} {'pClean':<10} {'Δclean':<9} {'b( corr-clean )':<18} {'p( corr-clean )':<18} {'Δdiff':<10}")
     print("-" * 80)
 
     for result in all_results_sorted[:10]:
         print(
             f"{result['layer']:<8} "
-            f"{result['baseline_prob']:<12.6f} "
-            f"{result['patched_prob']:<12.6f} "
-            f"{result['delta']:+12.6f}"
+            f"{result.get('baseline_clean_prob', 0.0):<10.6f} "
+            f"{result.get('patched_clean_prob', 0.0):<10.6f} "
+            f"{result.get('delta_clean', 0.0):+9.6f} "
+            f"{result.get('baseline_corr_minus_clean', 0.0):<18.6f} "
+            f"{result.get('patched_corr_minus_clean', 0.0):<18.6f} "
+            f"{result.get('delta_corr_minus_clean', 0.0):+10.6f}"
         )
 
 
