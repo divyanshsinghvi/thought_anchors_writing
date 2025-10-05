@@ -27,6 +27,13 @@ PRESENCE_FIELDS = {
     'ablation_reasoning_presence': 'Ablation reasoning'
 }
 
+PRESENCE_THINK_MODES = {
+    'baseline_presence': 'any',
+    'ablation_presence': 'any',
+    'baseline_reasoning_presence': 'any',
+    'ablation_reasoning_presence': 'allow_more_thinking',
+}
+
 
 def _init_presence_counter():
     return {
@@ -393,6 +400,10 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
     """Aggregate LLM twist presence detection statistics."""
 
     presence_summary = {field: _init_presence_counter() for field in PRESENCE_FIELDS}
+    presence_by_mode = {
+        'no_more_thinking': {field: _init_presence_counter() for field in PRESENCE_FIELDS},
+        'allow_more_thinking': {field: _init_presence_counter() for field in PRESENCE_FIELDS},
+    }
     presence_models = set()
     thresholds = set()
     batch_sizes = set()
@@ -425,13 +436,18 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
                 presence_models.add(presence_model)
 
             fields_requested = set(ablation.get('presence_fields_requested') or [])
+            think_mode = result.get('think_mode')
             for field, label in PRESENCE_FIELDS.items():
                 counter = presence_summary[field]
+                mode_counter = presence_by_mode.get(think_mode, {}).get(field)
 
                 if field in fields_requested:
                     counter['clean']['requested'] += 1
                     counter['corrupted']['requested'] += 1
                     any_requested = True
+                    if mode_counter:
+                        mode_counter['clean']['requested'] += 1
+                        mode_counter['corrupted']['requested'] += 1
 
                 presence_data = ablation.get(field)
                 if not isinstance(presence_data, dict):
@@ -447,12 +463,22 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
                         counter[twist_type]['parsed'] += 1
                         if present:
                             counter[twist_type]['present_true'] += 1
+                        if mode_counter:
+                            mode_counter[twist_type]['present_total'] += 1
+                            mode_counter[twist_type]['parsed'] += 1
+                            if present:
+                                mode_counter[twist_type]['present_true'] += 1
                     elif isinstance(confidence, (int, float)):
                         counter[twist_type]['parsed'] += 1
+                        if mode_counter:
+                            mode_counter[twist_type]['parsed'] += 1
 
                     if isinstance(confidence, (int, float)):
                         counter[twist_type]['confidence_sum'] += confidence
                         counter[twist_type]['confidence_count'] += 1
+                        if mode_counter:
+                            mode_counter[twist_type]['confidence_sum'] += confidence
+                            mode_counter[twist_type]['confidence_count'] += 1
 
         if result_threshold is not None:
             thresholds.add(result_threshold)
@@ -475,6 +501,9 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
 
     for field_counter in presence_summary.values():
         _finalize_presence_counter(field_counter)
+    for mode_counters in presence_by_mode.values():
+        for field_counter in mode_counters.values():
+            _finalize_presence_counter(field_counter)
 
     overall = {}
     ablation_story_corrupted = presence_summary['ablation_presence']['corrupted']
@@ -499,6 +528,7 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
         'available': True,
         'models': sorted(presence_models),
         'fields': presence_summary,
+        'by_think_mode': presence_by_mode,
         'thresholds': sorted(thresholds),
         'batch_sizes': sorted(batch_sizes),
         'max_new_tokens': sorted(max_new_tokens),
@@ -617,37 +647,53 @@ def print_summary(analysis: Dict):
             print(f"Max new tokens: {', '.join(str(m) for m in max_new_tokens)}")
 
         fields = presence.get('fields', {})
-        for field_key, label in PRESENCE_FIELDS.items():
-            data = fields.get(field_key)
-            if not data:
-                continue
-            print(f"\n{label}:")
-            for twist_type in ['clean', 'corrupted']:
-                entry = data.get(twist_type, {})
-                requested = entry.get('requested', 0)
-                parsed = entry.get('parsed', 0)
-                present_total = entry.get('present_total', 0)
-                present_true = entry.get('present_true', 0)
-                present_pct = entry.get('present_pct')
-                parsed_pct = entry.get('parsed_pct')
-                confidence_avg = entry.get('confidence_avg')
+        by_mode = presence.get('by_think_mode', {}) or {}
 
-                twist_label = 'Clean twist' if twist_type == 'clean' else 'Corrupted twist'
-                present_str = (
-                    f"present {present_true}/{present_total} ({present_pct:.1f}%)"
-                    if present_total > 0 and present_pct is not None
-                    else f"present {present_true}/{present_total}"
-                )
-                parsed_str = (
-                    f"parsed {parsed}/{requested} ({parsed_pct:.1f}%)"
-                    if requested > 0 and parsed_pct is not None
-                    else f"parsed {parsed}/{requested}"
-                )
-                conf_str = (
-                    f", avg conf {confidence_avg:.2f}"
-                    if confidence_avg is not None else ''
-                )
-                print(f"  {twist_label}: {present_str}; {parsed_str}{conf_str}")
+        def print_presence_table(title: str, data_map: Dict[str, Dict]):
+            print(f"\n{title}:")
+            for field_key, label in PRESENCE_FIELDS.items():
+                data = data_map.get(field_key)
+                if not data:
+                    continue
+                print(f"  {label}:")
+                for twist_type in ['clean', 'corrupted']:
+                    entry = data.get(twist_type, {})
+                    requested = entry.get('requested', 0)
+                    parsed = entry.get('parsed', 0)
+                    present_total = entry.get('present_total', 0)
+                    present_true = entry.get('present_true', 0)
+                    present_pct = entry.get('present_pct')
+                    parsed_pct = entry.get('parsed_pct')
+                    confidence_avg = entry.get('confidence_avg')
+
+                    twist_label = '    Clean twist' if twist_type == 'clean' else '    Corrupted twist'
+                    present_str = (
+                        f"present {present_true}/{present_total} ({present_pct:.1f}%)"
+                        if present_total > 0 and present_pct is not None
+                        else f"present {present_true}/{present_total}"
+                    )
+                    parsed_str = (
+                        f"parsed {parsed}/{requested} ({parsed_pct:.1f}%)"
+                        if requested > 0 and parsed_pct is not None
+                        else f"parsed {parsed}/{requested}"
+                    )
+                    conf_str = (
+                        f", avg conf {confidence_avg:.2f}"
+                        if confidence_avg is not None else ''
+                    )
+                    print(f"{twist_label}: {present_str}; {parsed_str}{conf_str}")
+
+        print_presence_table('All think modes combined', fields)
+
+        mode_labels = {
+            'no_more_thinking': 'No More Thinking',
+            'allow_more_thinking': 'Allow More Thinking'
+        }
+        for mode_key, label in mode_labels.items():
+            mode_data = by_mode.get(mode_key)
+            if not mode_data:
+                continue
+            print_presence_table(f"{label}", mode_data)
 
         overall = presence.get('overall', {})
         if overall:
