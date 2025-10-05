@@ -74,14 +74,14 @@ MATCHED_PAIRS = [
     }
 ]
 
-def get_resid_handle(t, model, layer: int, location: str):
+def get_resid_handle(model, layer: int, location: str):
     """Return traced handle for residual location: pre_attn, post_attn, post_mlp."""
     if location == "pre_attn":
-        return t(model.model.layers[layer].self_attn).inputs[0]
+        return model.model.layers[layer].self_attn.input[0][0]
     if location == "post_attn":
-        return t(model.model.layers[layer].mlp).inputs[0]
+        return model.model.layers[layer].self_attn.output
     if location == "post_mlp":
-        return t(model.model.layers[layer]).output
+        return model.model.layers[layer].output
     raise ValueError("location must be one of: pre_attn, post_attn, post_mlp")
 
 
@@ -156,21 +156,21 @@ def patch_layer_nnsight(
     target_inputs = tokenizer(target_prompt, return_tensors="pt").to(DEVICE)
 
     # Capture source residual at chosen location
-    with model.trace(source_inputs) as t_src:
-        src_handle = get_resid_handle(t_src, model, layer, location).save()
-    source_activation = src_handle.value.cpu()  # Move to CPU immediately
+    with model.trace(source_inputs):
+        src_handle = get_resid_handle(model, layer, location).save()
+    source_activation = src_handle.cpu()  # Move to CPU immediately
 
     # Patch into target with alignment
-    with model.trace(target_inputs) as t_tgt:
-        tgt_handle = get_resid_handle(t_tgt, model, layer, location)
+    with model.trace(target_inputs):
+        tgt_handle = get_resid_handle(model, layer, location)
         tgt_len = int(target_inputs["input_ids"].shape[1])
         min_len = min(source_activation.shape[1], tgt_len)
         # Move source back to device for patching
         tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :].to(DEVICE)
-        traced_out = t_tgt(model).output.save()
+        traced_out = model.output.save()
 
     # Compute patched probabilities - move to CPU immediately
-    logits = traced_out.value.logits.cpu()
+    logits = traced_out.logits.cpu()
     probs = torch.softmax(logits[0, -1, :], dim=0)
 
     def avg_first_token_prob(words: List[str]) -> float:
