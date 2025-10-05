@@ -9,7 +9,7 @@ PROMPTS_YAML = BASE_DIR / "non_fictional_prompts.yaml"
 FICTIONAL_PROMPTS_YAML = BASE_DIR / "fictional_prompts.yaml"
 
 # Output paths
-OUTPUT_DIR_BASE_PATH = Path("/mnt/d/code/open_source/mats/thought_anchors_writing/data")
+OUTPUT_DIR_BASE_PATH = Path("/pscratch/sd/r/ritesh11/temp/data")
 OUTPUT_DIR_NON_FICTION = OUTPUT_DIR_BASE_PATH / "non_fiction"
 OUTPUT_DIR_FICTION = OUTPUT_DIR_BASE_PATH / "fiction"
 
