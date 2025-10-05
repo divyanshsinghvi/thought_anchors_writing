@@ -20,6 +20,51 @@ from typing import Dict, List, Tuple
 from collections import defaultdict
 import numpy as np
 
+PRESENCE_FIELDS = {
+    'baseline_presence': 'Baseline story',
+    'ablation_presence': 'Ablation story',
+    'baseline_reasoning_presence': 'Baseline reasoning',
+    'ablation_reasoning_presence': 'Ablation reasoning'
+}
+
+
+def _init_presence_counter():
+    return {
+        'clean': {
+            'requested': 0,
+            'parsed': 0,
+            'present_total': 0,
+            'present_true': 0,
+            'confidence_sum': 0.0,
+            'confidence_count': 0,
+            'present_pct': None,
+            'parsed_pct': None,
+            'confidence_avg': None,
+        },
+        'corrupted': {
+            'requested': 0,
+            'parsed': 0,
+            'present_total': 0,
+            'present_true': 0,
+            'confidence_sum': 0.0,
+            'confidence_count': 0,
+            'present_pct': None,
+            'parsed_pct': None,
+            'confidence_avg': None,
+        }
+    }
+
+
+def _finalize_presence_counter(counter: Dict):
+    for key in ['clean', 'corrupted']:
+        data = counter[key]
+        if data['present_total'] > 0:
+            data['present_pct'] = 100 * data['present_true'] / data['present_total']
+        if data['requested'] > 0:
+            data['parsed_pct'] = 100 * data['parsed'] / data['requested']
+        if data['confidence_count'] > 0:
+            data['confidence_avg'] = data['confidence_sum'] / data['confidence_count']
+
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -344,6 +389,124 @@ def analyze_reasoning_shift(all_results: List[Dict]) -> Dict:
     }
 
 
+def analyze_presence_detection(all_results: List[Dict]) -> Dict:
+    """Aggregate LLM twist presence detection statistics."""
+
+    presence_summary = {field: _init_presence_counter() for field in PRESENCE_FIELDS}
+    presence_models = set()
+    thresholds = set()
+    batch_sizes = set()
+    max_new_tokens = set()
+    total_parse_warnings = 0
+
+    any_requested = False
+
+    for result in all_results:
+        if not result or 'ablations' not in result:
+            continue
+
+        models_info = result.get('models', {}) or {}
+        result_presence_model = models_info.get('presence')
+        result_threshold = None
+        result_batch = None
+        result_max_new = None
+
+        # Summary-level metadata
+        summary = result.get('summary') or {}
+        if isinstance(summary, dict):
+            result_threshold = summary.get('presence_threshold')
+            result_batch = summary.get('presence_batch_size')
+            result_max_new = summary.get('presence_max_new_tokens')
+            total_parse_warnings += summary.get('presence_parse_warnings', 0) or 0
+
+        for ablation in result['ablations']:
+            presence_model = ablation.get('presence_model') or result_presence_model
+            if presence_model:
+                presence_models.add(presence_model)
+
+            fields_requested = set(ablation.get('presence_fields_requested') or [])
+            for field, label in PRESENCE_FIELDS.items():
+                counter = presence_summary[field]
+
+                if field in fields_requested:
+                    counter['clean']['requested'] += 1
+                    counter['corrupted']['requested'] += 1
+                    any_requested = True
+
+                presence_data = ablation.get(field)
+                if not isinstance(presence_data, dict):
+                    continue
+
+                for twist_type in ['clean', 'corrupted']:
+                    twist_entry = presence_data.get(twist_type) or {}
+                    present = twist_entry.get('present')
+                    confidence = twist_entry.get('confidence')
+
+                    if present is not None:
+                        counter[twist_type]['present_total'] += 1
+                        counter[twist_type]['parsed'] += 1
+                        if present:
+                            counter[twist_type]['present_true'] += 1
+                    elif isinstance(confidence, (int, float)):
+                        counter[twist_type]['parsed'] += 1
+
+                    if isinstance(confidence, (int, float)):
+                        counter[twist_type]['confidence_sum'] += confidence
+                        counter[twist_type]['confidence_count'] += 1
+
+        if result_threshold is not None:
+            thresholds.add(result_threshold)
+        if result_batch is not None:
+            batch_sizes.add(result_batch)
+        if result_max_new is not None:
+            max_new_tokens.add(result_max_new)
+
+    if not any_requested:
+        return {
+            'available': False,
+            'models': [],
+            'fields': {},
+            'thresholds': [],
+            'batch_sizes': [],
+            'max_new_tokens': [],
+            'parse_warnings': total_parse_warnings,
+            'overall': {}
+        }
+
+    for field_counter in presence_summary.values():
+        _finalize_presence_counter(field_counter)
+
+    overall = {}
+    ablation_story_corrupted = presence_summary['ablation_presence']['corrupted']
+    if ablation_story_corrupted['present_total'] > 0:
+        overall['ablation_story_corrupted_present_pct'] = ablation_story_corrupted['present_pct']
+        overall['ablation_story_corrupted_present_count'] = (
+            ablation_story_corrupted['present_true'],
+            ablation_story_corrupted['present_total']
+        )
+
+    baseline_story_corrupted = presence_summary['baseline_presence']['corrupted']
+    if baseline_story_corrupted['present_total'] > 0:
+        overall['baseline_story_corrupted_present_pct'] = baseline_story_corrupted['present_pct']
+        overall['baseline_story_corrupted_present_count'] = (
+            baseline_story_corrupted['present_true'],
+            baseline_story_corrupted['present_total']
+        )
+
+    overall['parse_warnings'] = total_parse_warnings
+
+    return {
+        'available': True,
+        'models': sorted(presence_models),
+        'fields': presence_summary,
+        'thresholds': sorted(thresholds),
+        'batch_sizes': sorted(batch_sizes),
+        'max_new_tokens': sorted(max_new_tokens),
+        'parse_warnings': total_parse_warnings,
+        'overall': overall
+    }
+
+
 def print_summary(analysis: Dict):
     """Print human-readable summary."""
     print("\n" + "=" * 80)
@@ -432,6 +595,81 @@ def print_summary(analysis: Dict):
                 f"{shift['content_prefers_corrupted_pct']:.1f}%"
             )
 
+    # 6. LLM Twist Presence Detection
+    presence = analysis.get('presence_detection', {})
+    print("\n6. LLM TWIST PRESENCE DETECTION")
+    print("-" * 80)
+    if not presence or not presence.get('available'):
+        print("\nPresence detection not requested in these runs.")
+    else:
+        models = presence.get('models') or []
+        thresholds = presence.get('thresholds') or []
+        batch_sizes = presence.get('batch_sizes') or []
+        max_new_tokens = presence.get('max_new_tokens') or []
+
+        if models:
+            print(f"\nModels: {', '.join(models)}")
+        if thresholds:
+            print(f"Thresholds: {', '.join(f'{t:.2f}' if isinstance(t, float) else str(t) for t in thresholds)}")
+        if batch_sizes:
+            print(f"Batch sizes: {', '.join(str(b) for b in batch_sizes)}")
+        if max_new_tokens:
+            print(f"Max new tokens: {', '.join(str(m) for m in max_new_tokens)}")
+
+        fields = presence.get('fields', {})
+        for field_key, label in PRESENCE_FIELDS.items():
+            data = fields.get(field_key)
+            if not data:
+                continue
+            print(f"\n{label}:")
+            for twist_type in ['clean', 'corrupted']:
+                entry = data.get(twist_type, {})
+                requested = entry.get('requested', 0)
+                parsed = entry.get('parsed', 0)
+                present_total = entry.get('present_total', 0)
+                present_true = entry.get('present_true', 0)
+                present_pct = entry.get('present_pct')
+                parsed_pct = entry.get('parsed_pct')
+                confidence_avg = entry.get('confidence_avg')
+
+                twist_label = 'Clean twist' if twist_type == 'clean' else 'Corrupted twist'
+                present_str = (
+                    f"present {present_true}/{present_total} ({present_pct:.1f}%)"
+                    if present_total > 0 and present_pct is not None
+                    else f"present {present_true}/{present_total}"
+                )
+                parsed_str = (
+                    f"parsed {parsed}/{requested} ({parsed_pct:.1f}%)"
+                    if requested > 0 and parsed_pct is not None
+                    else f"parsed {parsed}/{requested}"
+                )
+                conf_str = (
+                    f", avg conf {confidence_avg:.2f}"
+                    if confidence_avg is not None else ''
+                )
+                print(f"  {twist_label}: {present_str}; {parsed_str}{conf_str}")
+
+        overall = presence.get('overall', {})
+        if overall:
+            leak = overall.get('ablation_story_corrupted_present_pct')
+            if leak is not None:
+                count = overall.get('ablation_story_corrupted_present_count')
+                if count:
+                    print(
+                        f"\nAblation story corrupted presence: {leak:.1f}% ({count[0]}/{count[1]})"
+                    )
+            baseline_leak = overall.get('baseline_story_corrupted_present_pct')
+            if baseline_leak is not None:
+                count = overall.get('baseline_story_corrupted_present_count')
+                if count:
+                    print(
+                        f"Baseline story corrupted presence: {baseline_leak:.1f}% ({count[0]}/{count[1]})"
+                    )
+
+        warnings = presence.get('parse_warnings', 0)
+        if warnings:
+            print(f"\nPresence parser warnings (aggregate): {warnings}")
+
     print("\n" + "=" * 80)
 
 
@@ -473,6 +711,7 @@ def main():
         'twist_stickiness': analyze_twist_stickiness(all_results),
         'baseline_resistance': analyze_baseline_resistance(all_results),
         'reasoning_shift': analyze_reasoning_shift(all_results),
+        'presence_detection': analyze_presence_detection(all_results),
     }
 
     # Print summary
