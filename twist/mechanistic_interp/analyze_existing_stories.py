@@ -41,7 +41,7 @@ except ImportError:
 class QwenEmbeddings:
     """Wrapper to use Qwen model for embeddings via mean pooling."""
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-0.6B"):
         if not TRANSFORMERS_AVAILABLE:
             raise ImportError("transformers not installed")
 
