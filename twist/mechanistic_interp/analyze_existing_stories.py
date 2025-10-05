@@ -401,14 +401,14 @@ def main():
     # Load semantic model if requested
     semantic_model = None
     if args.use_semantic:
-        if args.semantic_model.lower() in ['qwen', 'qwen2.5-0.5b', 'qwen/qwen2.5-0.5b']:
+        if args.semantic_model.lower() in ['qwen', 'qwen3-0.6b', 'qwen/qwen3-0.6b']:
             # Use Qwen for embeddings
             if not TRANSFORMERS_AVAILABLE:
                 print("\n⚠ Error: transformers not installed. Install with:")
                 print("  pip install transformers torch")
                 return
-            print(f"\nLoading Qwen model for embeddings: Qwen/Qwen2.5-0.5B...")
-            semantic_model = QwenEmbeddings("Qwen/Qwen2.5-0.5B")
+            print(f"\nLoading Qwen model for embeddings: Qwen/Qwen3-0.6B...")
+            semantic_model = QwenEmbeddings("Qwen/Qwen3-0.6B")
             print(f"✓ Qwen model loaded")
         else:
             # Use sentence-transformers
