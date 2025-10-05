@@ -10,6 +10,7 @@ Key Questions:
 2. Does think mode affect filtering?
 3. Are some twists more "sticky" (harder to override)?
 4. Are some baselines more resistant to corruption?
+5. How do LLM twist detections compare with semantic similarity shifts?
 """
 
 import json
@@ -537,6 +538,93 @@ def analyze_presence_detection(all_results: List[Dict]) -> Dict:
     }
 
 
+def analyze_presence_correlation(all_results: List[Dict]) -> Dict:
+    """Correlation between semantic similarity shifts and LLM presence confidence."""
+
+    story_sem_diffs = []
+    story_conf = []
+    story_modes = []
+
+    reasoning_sem_diffs = []
+    reasoning_conf = []
+
+    for result in all_results:
+        if not result or 'ablations' not in result:
+            continue
+
+        think_mode = result.get('think_mode')
+
+        for ablation in result['ablations']:
+            # Story correlation
+            semantic_clean = ablation.get('ablation_content_vs_clean')
+            semantic_corrupt = ablation.get('ablation_content_vs_corrupted')
+            if semantic_clean is not None and semantic_corrupt is not None:
+                presence = ablation.get('ablation_presence') or {}
+                corrupt_presence = presence.get('corrupted') if isinstance(presence, dict) else None
+                if corrupt_presence:
+                    conf = corrupt_presence.get('confidence')
+                    if isinstance(conf, (int, float)):
+                        story_sem_diffs.append(semantic_corrupt - semantic_clean)
+                        story_conf.append(conf)
+                        story_modes.append(think_mode)
+
+            # Reasoning correlation (allow_more_thinking only)
+            if think_mode != 'allow_more_thinking':
+                continue
+
+            semantic_reasoning_corrupt = ablation.get('ablation_reasoning_vs_corrupted')
+            baseline_reasoning_corrupt = ablation.get('baseline_reasoning_vs_corrupted')
+            if semantic_reasoning_corrupt is None or baseline_reasoning_corrupt is None:
+                continue
+
+            reasoning_presence = ablation.get('ablation_reasoning_presence') or {}
+            corrupt_reasoning_presence = reasoning_presence.get('corrupted') if isinstance(reasoning_presence, dict) else None
+            if not corrupt_reasoning_presence:
+                continue
+
+            conf_reason = corrupt_reasoning_presence.get('confidence')
+            if isinstance(conf_reason, (int, float)):
+                reasoning_sem_diffs.append(semantic_reasoning_corrupt - baseline_reasoning_corrupt)
+                reasoning_conf.append(conf_reason)
+
+    def compute_stats(xs: List[float], ys: List[float]):
+        points = len(xs)
+        if points < 2:
+            return {
+                'points': points,
+                'correlation': None,
+                'mean_semantic': float(np.mean(xs)) if xs else None,
+                'mean_confidence': float(np.mean(ys)) if ys else None
+            }
+
+        arr_x = np.array(xs, dtype=float)
+        arr_y = np.array(ys, dtype=float)
+        if np.std(arr_x) == 0 or np.std(arr_y) == 0:
+            corr = None
+        else:
+            corr = float(np.corrcoef(arr_x, arr_y)[0, 1])
+
+        return {
+            'points': points,
+            'correlation': corr,
+            'mean_semantic': float(np.mean(arr_x)),
+            'mean_confidence': float(np.mean(arr_y))
+        }
+
+    story_stats = compute_stats(story_sem_diffs, story_conf)
+    story_stats['think_modes'] = {
+        'no_more_thinking': story_modes.count('no_more_thinking'),
+        'allow_more_thinking': story_modes.count('allow_more_thinking')
+    }
+
+    reasoning_stats = compute_stats(reasoning_sem_diffs, reasoning_conf)
+
+    return {
+        'story': story_stats,
+        'reasoning': reasoning_stats
+    }
+
+
 def print_summary(analysis: Dict):
     """Print human-readable summary."""
     print("\n" + "=" * 80)
@@ -716,6 +804,30 @@ def print_summary(analysis: Dict):
         if warnings:
             print(f"\nPresence parser warnings (aggregate): {warnings}")
 
+    # 7. LLM Presence vs Semantic Correlation
+    presence_corr = analysis.get('presence_correlation', {})
+    print("\n7. LLM PRESENCE VS SEMANTIC CORRELATION")
+    print("-" * 80)
+    story_corr = presence_corr.get('story', {})
+    if story_corr.get('points', 0) < 2 or story_corr.get('correlation') is None:
+        print("\nStory content: not enough data for correlation.")
+    else:
+        modes = story_corr.get('think_modes', {}) or {}
+        print(f"\nStory content points: {story_corr['points']} (no_more_thinking={modes.get('no_more_thinking', 0)}, allow_more_thinking={modes.get('allow_more_thinking', 0)})")
+        print(f"Mean semantic diff (corrupted - clean): {story_corr['mean_semantic']:.3f}")
+        print(f"Mean LLM confidence (corrupted twist): {story_corr['mean_confidence']:.3f}")
+        print(f"Pearson correlation: {story_corr['correlation']:.3f}")
+
+    reasoning_corr = presence_corr.get('reasoning', {})
+    if reasoning_corr.get('points', 0) < 2 or reasoning_corr.get('correlation') is None:
+        print("\nReasoning (allow_more_thinking): not enough data for correlation.")
+    else:
+        print("\nReasoning (allow_more_thinking):")
+        print(f"  Points: {reasoning_corr['points']}")
+        print(f"  Mean semantic shift (Δ corrupted similarity): {reasoning_corr['mean_semantic']:.3f}")
+        print(f"  Mean LLM confidence (corrupted twist): {reasoning_corr['mean_confidence']:.3f}")
+        print(f"  Pearson correlation: {reasoning_corr['correlation']:.3f}")
+
     print("\n" + "=" * 80)
 
 
@@ -758,6 +870,7 @@ def main():
         'baseline_resistance': analyze_baseline_resistance(all_results),
         'reasoning_shift': analyze_reasoning_shift(all_results),
         'presence_detection': analyze_presence_detection(all_results),
+        'presence_correlation': analyze_presence_correlation(all_results),
     }
 
     # Print summary
