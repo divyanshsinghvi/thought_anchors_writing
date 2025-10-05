@@ -39,25 +39,52 @@ def load_ablation_data(
         baseline_data = json.load(f)
 
     ablation_data = {}
-    for twist_dir in sorted(ablation_dir.glob("twist_*")):
-        twist_id = twist_dir.name
-        if twist_id == baseline_id:
-            continue
 
-        rollout_dir = twist_dir / think_mode
-        if not rollout_dir.exists():
-            continue
+    # Support both old (twist_NNN/) and new (baseline_XXX/target_YYY/) structures
+    # Try new structure first
+    baseline_dirs = list(ablation_dir.glob(f"baseline_{baseline_id}"))
 
-        # Load all rollouts (or up to max)
-        rollout_files = sorted(rollout_dir.glob("rollout_*.json"))
-        if max_rollouts_per_twist:
-            rollout_files = rollout_files[:max_rollouts_per_twist]
+    if baseline_dirs:
+        # New structure: baseline_XXX/target_YYY/think_mode/
+        for baseline_dir in baseline_dirs:
+            for target_dir in sorted(baseline_dir.glob("target_*")):
+                target_id = target_dir.name.replace("target_", "")
 
-        for rollout_file in rollout_files:
-            with open(rollout_file, 'r') as f:
-                rollout_data = json.load(f)
-                rollout_key = f"{twist_id}_{rollout_file.stem}"
-                ablation_data[rollout_key] = rollout_data
+                rollout_dir = target_dir / think_mode
+                if not rollout_dir.exists():
+                    continue
+
+                # Load all rollouts (or up to max)
+                rollout_files = sorted(rollout_dir.glob("rollout_*.json"))
+                if max_rollouts_per_twist:
+                    rollout_files = rollout_files[:max_rollouts_per_twist]
+
+                for rollout_file in rollout_files:
+                    with open(rollout_file, 'r') as f:
+                        rollout_data = json.load(f)
+                        rollout_key = f"{target_id}_{rollout_file.stem}"
+                        ablation_data[rollout_key] = rollout_data
+    else:
+        # Old structure: twist_NNN/think_mode/
+        for twist_dir in sorted(ablation_dir.glob("twist_*")):
+            twist_id = twist_dir.name
+            if twist_id == baseline_id:
+                continue
+
+            rollout_dir = twist_dir / think_mode
+            if not rollout_dir.exists():
+                continue
+
+            # Load all rollouts (or up to max)
+            rollout_files = sorted(rollout_dir.glob("rollout_*.json"))
+            if max_rollouts_per_twist:
+                rollout_files = rollout_files[:max_rollouts_per_twist]
+
+            for rollout_file in rollout_files:
+                with open(rollout_file, 'r') as f:
+                    rollout_data = json.load(f)
+                    rollout_key = f"{twist_id}_{rollout_file.stem}"
+                    ablation_data[rollout_key] = rollout_data
 
     return {'baseline': baseline_data, 'ablations': ablation_data}
 
