@@ -228,6 +228,10 @@ def main():
         '--pair', type=int, default=1, choices=[1, 2, 3, 4],
         help='Which pair to run (1-4)'
     )
+    parser.add_argument(
+        '--model', type=str, default='Qwen/QwQ-32B-Preview',
+        help='Model to use (default: Qwen/QwQ-32B-Preview, a reasoning-focused model)'
+    )
     args = parser.parse_args()
 
     config = MATCHED_PAIRS[args.pair - 1]
@@ -257,15 +261,25 @@ def main():
     print(f"Target (allow_more_thinking): {len(target_prompt)} chars")
 
     # Load model
-    print("\nLoading model...")
-    print("WARNING: This requires ~28GB GPU memory")
+    print(f"\nLoading model: {args.model}")
+
+    # Estimate memory requirements
+    memory_estimates = {
+        'Qwen/QwQ-32B-Preview': '~64GB',
+        'Qwen/Qwen2.5-14B-Instruct': '~28GB',
+        'Qwen/Qwen2.5-7B-Instruct': '~14GB',
+        'meta-llama/Meta-Llama-3-8B-Instruct': '~16GB'
+    }
+    memory_est = memory_estimates.get(args.model, '~unknown')
+
+    print(f"WARNING: This requires {memory_est} GPU memory")
     response = input("Continue? (y/n): ")
     if response.lower() != 'y':
         print("Aborted.")
         return
 
     from twist.mechanistic_interp.setup import load_model
-    model = load_model("Qwen/Qwen3-14B")
+    model = load_model(args.model)
 
     n_layers = model.cfg.n_layers
     n_heads = model.cfg.n_heads
