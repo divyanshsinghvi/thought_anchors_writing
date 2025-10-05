@@ -38,7 +38,7 @@ except ImportError:
 class QwenEmbeddings:
     """Wrapper to use Qwen model for embeddings via mean pooling."""
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-0.6B"):
         if not TRANSFORMERS_AVAILABLE:
             raise ImportError("transformers not installed")
 
@@ -73,11 +73,11 @@ class QwenEmbeddings:
 
 def load_semantic_model(model_type: str = "qwen"):
     """Load semantic similarity model."""
-    if model_type.lower() in ['qwen', 'qwen2.5-0.5b', 'qwen/qwen2.5-0.5b']:
+    if model_type.lower() in ['qwen', 'qwen3-0.6b', 'qwen/qwen3-0.6b']:
         if not TRANSFORMERS_AVAILABLE:
             raise ImportError("transformers not installed. Install: pip install transformers torch")
         print(f"Loading Qwen model for embeddings...")
-        return QwenEmbeddings("Qwen/Qwen2.5-0.5B")
+        return QwenEmbeddings("Qwen/Qwen3-0.6B")
     else:
         if not SEMANTIC_AVAILABLE:
             raise ImportError("sentence-transformers not installed. Install: pip install sentence-transformers")
