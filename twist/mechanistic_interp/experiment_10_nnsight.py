@@ -19,7 +19,7 @@ import json
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -32,6 +32,7 @@ from twist.config import OUTPUT_DIR_BASE_PATH
 
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MAX_INPUT_TOKENS: Optional[int] = None
 
 # Paths
 ABLATION_DIR = OUTPUT_DIR_BASE_PATH / "ablation_outputs"
@@ -108,13 +109,19 @@ def compute_keyword_probability(
     """Compute average probability of keywords as next token using NNsight trace."""
 
     # Tokenize
-    inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=MAX_INPUT_TOKENS
+    ).to(DEVICE)
 
     # Use NNsight trace to get logits
-    with model.trace(inputs):
-        logits_out = model.output.save()
+    with torch.no_grad():
+        with model.trace(inputs):
+            logits_out = model.output.clone().save()
 
-    # Get probabilities at last position - move to CPU immediately
+    # Get probabilities at last position - access saved value directly
     logits = logits_out.logits.cpu()
     probs = torch.softmax(logits[0, -1, :], dim=0)
 
@@ -155,24 +162,35 @@ def patch_layer_nnsight(
     baseline_corr = compute_keyword_probability(model, tokenizer, target_prompt, corrupted_keywords)
 
     # Tokenize both prompts
-    source_inputs = tokenizer(source_prompt, return_tensors="pt").to(DEVICE)
-    target_inputs = tokenizer(target_prompt, return_tensors="pt").to(DEVICE)
+    source_inputs = tokenizer(
+        source_prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=MAX_INPUT_TOKENS
+    ).to(DEVICE)
+    target_inputs = tokenizer(
+        target_prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=MAX_INPUT_TOKENS
+    ).to(DEVICE)
 
     # Capture source residual at chosen location
-    with model.trace(source_inputs):
-        src_handle = get_resid_handle(model, layer, location).save()
-    source_activation = src_handle.cpu()  # Move to CPU immediately
+    with torch.no_grad():
+        with model.trace(source_inputs):
+            src_act = get_resid_handle(model, layer, location).clone().save()
+        source_activation = src_act  # Saved value is directly accessible
 
-    # Patch into target with alignment
-    with model.trace(target_inputs):
-        tgt_handle = get_resid_handle(model, layer, location)
-        tgt_len = int(target_inputs["input_ids"].shape[1])
-        min_len = min(source_activation.shape[1], tgt_len)
-        # Move source back to device for patching
-        tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :].to(DEVICE)
-        traced_out = model.output.save()
+        # Patch into target with alignment
+        with model.trace(target_inputs):
+            tgt_handle = get_resid_handle(model, layer, location)
+            tgt_len = int(target_inputs["input_ids"].shape[1])
+            min_len = min(source_activation.shape[1], tgt_len)
+            # Patch: assign source activation to target
+            tgt_handle[:, :min_len, :] = source_activation[:, :min_len, :]
+            traced_out = model.output.clone().save()
 
-    # Compute patched probabilities - move to CPU immediately
+    # Compute patched probabilities - access saved value directly
     logits = traced_out.logits.cpu()
     probs = torch.softmax(logits[0, -1, :], dim=0)
 
@@ -266,6 +284,10 @@ def main():
                        help='Any HuggingFace model (e.g., Qwen/Qwen2.5-14B, Qwen/Qwen2.5-7B)')
     parser.add_argument('--refresh-cache', action='store_true',
                        help='Clear cache before running')
+    parser.add_argument('--max-input-tokens', type=int, default=None,
+                       help='Truncate source/target prompts to this many tokens before tracing')
+    parser.add_argument('--device', type=str, default=None, choices=['cpu','cuda'],
+                       help='Force device placement; default auto-detect')
     parser.add_argument('--location', type=str, default='post_attn',
                        choices=['pre_attn','post_attn','post_mlp'],
                        help='Residual location to patch')
@@ -306,13 +328,25 @@ def main():
     print(f"Source: {len(source_prompt)} chars")
     print(f"Target: {len(target_prompt)} chars")
 
+    # Configure globals
+    global MAX_INPUT_TOKENS, DEVICE
+    if args.device:
+        DEVICE = args.device
+    MAX_INPUT_TOKENS = args.max_input_tokens
+
     # Load model with NNsight
     print(f"\nLoading model with NNsight: {args.model}")
     print("This may take a few minutes...")
 
     # Load model on specific device (not 'auto' to avoid meta tensors)
     dtype = torch.float16 if DEVICE == 'cuda' else torch.float32
-    model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
+    try:
+        model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
+    except RuntimeError as e:
+        print(f"\n⚠ CUDA load failed ({e}); falling back to CPU")
+        DEVICE = 'cpu'
+        dtype = torch.float32
+        model = LanguageModel(args.model, device_map=DEVICE, dtype=dtype)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     print(f"✓ Model loaded")
@@ -349,6 +383,13 @@ def main():
             layer, config['clean_keywords'], corrupted_keywords,
             cache_file, location=args.location, refresh_cache=args.refresh_cache
         )
+
+        # Aggressive memory cleanup between layers (helps small GPUs)
+        try:
+            if DEVICE == 'cuda':
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
         all_results.extend(layer_results)
 
